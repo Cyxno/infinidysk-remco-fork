@@ -145,6 +145,67 @@ public class ExceptionMiddlewareTests
         Assert.Equal(1, failureTracker.GetFailureCount(davItem.Id));
     }
 
+    [Fact]
+    public async Task IncompleteMultipartPartBeforeResponseStarted_ReturnsNotFoundWithoutAborting()
+    {
+        var lifetimeFeature = new TestHttpRequestLifetimeFeature();
+        var context = CreateDavItemContext(hasStarted: false, lifetimeFeature);
+        var middleware = CreateMiddleware(
+            _ => throw new IncompleteMultipartPartException("volume ended 3071980 bytes early"));
+
+        await middleware.InvokeAsync(context);
+
+        Assert.Equal(StatusCodes.Status404NotFound, context.Response.StatusCode);
+        Assert.False(lifetimeFeature.Aborted);
+    }
+
+    [Fact]
+    public async Task IncompleteMultipartPartAfterResponseStarted_AbortsConnection()
+    {
+        var lifetimeFeature = new TestHttpRequestLifetimeFeature();
+        var context = CreateDavItemContext(hasStarted: true, lifetimeFeature);
+        var middleware = CreateMiddleware(
+            _ => throw new IncompleteMultipartPartException("volume ended 3071980 bytes early"));
+
+        await middleware.InvokeAsync(context);
+
+        Assert.True(lifetimeFeature.Aborted);
+    }
+
+    [Fact]
+    public async Task IncompleteMultipartPartWithDavItem_RecordsStreamingFailure()
+    {
+        var lifetimeFeature = new TestHttpRequestLifetimeFeature();
+        var context = CreateDavItemContext(hasStarted: false, lifetimeFeature);
+        var davItem = Assert.IsType<DavItem>(context.Items["DavItem"]);
+        var failureTracker = new StreamingFailureTracker();
+        var middleware = CreateMiddleware(
+            _ => throw new IncompleteMultipartPartException("volume ended 3071980 bytes early"),
+            CreateRepairEnabledConfig(),
+            failureTracker);
+
+        await middleware.InvokeAsync(context);
+
+        Assert.Equal(1, failureTracker.GetFailureCount(davItem.Id));
+    }
+
+    [Fact]
+    public async Task IncompleteMultipartPart_LogsOneWarningLineWithoutAStackDump()
+    {
+        var reason = $"volume ended 3071980 bytes early ({Guid.NewGuid()})";
+        var lifetimeFeature = new TestHttpRequestLifetimeFeature();
+        var context = CreateDavItemContext(hasStarted: true, lifetimeFeature);
+        var middleware = CreateMiddleware(
+            _ => throw new IncompleteMultipartPartException(reason));
+
+        var events = await CaptureLogsAsync(() => middleware.InvokeAsync(context));
+
+        var logged = Assert.Single(
+            events, e => e.RenderMessage().Contains(reason, StringComparison.Ordinal));
+        Assert.Equal(LogEventLevel.Warning, logged.Level);
+        Assert.Null(logged.Exception);
+    }
+
     [Theory]
     [InlineData(0, 1, true)]
     [InlineData(3, 2, false)]
