@@ -354,6 +354,26 @@ export function WebdavSettings({ config, setNewConfig }: SabnzbdSettingsProps) {
                     </div>
                 </ManagedSetting>
 
+                <ManagedSetting configKey="usenet.streaming-read-timeout-seconds">
+                    <div className="space-y-2">
+                        <label className="block text-sm font-medium text-base-content" htmlFor="streaming-read-timeout-input">Streaming Read Timeout</label>
+                        <div className="flex w-full">
+                            <Input
+                                className={!isValidStreamingReadTimeout(config["usenet.streaming-read-timeout-seconds"]) ? 'input-error' : undefined}
+                                type="text"
+                                id="streaming-read-timeout-input"
+                                aria-describedby="streaming-read-timeout-help"
+                                placeholder="30"
+                                value={config["usenet.streaming-read-timeout-seconds"]}
+                                onChange={e => setNewConfig({ ...config, "usenet.streaming-read-timeout-seconds": e.target.value })} />
+                            <span className="flex items-center rounded-r border border-l-0 border-base-content/20 bg-base-200 px-2 text-sm text-base-content/80">sec</span>
+                        </div>
+                        <p className="text-[11px] leading-relaxed text-base-content/45" id="streaming-read-timeout-help">
+                            Initial backend wait budget to open a WebDAV or /view GET/range (5–120s, default 30): store lookup, download-semaphore admission, connection-pool wait, and first segment. Cleared once body bytes start flowing — mid-stream stalls use the per-segment timeout above. Fails the HTTP read promptly when the Usenet backend never starts delivering, instead of blocking until the client disconnects.
+                        </p>
+                    </div>
+                </ManagedSetting>
+
                 <ManagedSetting configKey="usenet.streaming-segment-retries">
                     <div className="space-y-2">
                         <label className="block text-sm font-medium text-base-content" htmlFor="streaming-segment-retries-input">Streaming Segment Retries</label>
@@ -459,6 +479,7 @@ export function isWebdavSettingsUpdated(config: Record<string, string>, newConfi
         || config["queue.worker-count"] !== newConfig["queue.worker-count"]
         || config["usenet.streaming-priority"] !== newConfig["usenet.streaming-priority"]
         || config["usenet.streaming-segment-timeout-seconds"] !== newConfig["usenet.streaming-segment-timeout-seconds"]
+        || config["usenet.streaming-read-timeout-seconds"] !== newConfig["usenet.streaming-read-timeout-seconds"]
         || config["usenet.streaming-segment-retries"] !== newConfig["usenet.streaming-segment-retries"]
         || config["usenet.article-buffer-size"] !== newConfig["usenet.article-buffer-size"]
         || config["usenet.in-flight-article-budget-mb"] !== newConfig["usenet.in-flight-article-budget-mb"]
@@ -483,6 +504,7 @@ export function isWebdavSettingsValid(newConfig: Record<string, string>) {
         && isValidQueueWorkerCount(newConfig["queue.worker-count"])
         && isValidStreamingPriority(newConfig["usenet.streaming-priority"])
         && isValidStreamingSegmentTimeout(newConfig["usenet.streaming-segment-timeout-seconds"])
+        && isValidStreamingReadTimeout(newConfig["usenet.streaming-read-timeout-seconds"])
         && isValidStreamingSegmentRetries(newConfig["usenet.streaming-segment-retries"])
         && isValidArticleBufferSize(newConfig["usenet.article-buffer-size"])
         && isValidInFlightArticleBudget(newConfig["usenet.in-flight-article-budget-mb"])
@@ -527,6 +549,12 @@ function isValidStreamingSegmentTimeout(value: string): boolean {
     if (value.trim() === "") return false;
     const num = Number(value);
     return Number.isInteger(num) && num >= 2 && num <= 40;
+}
+
+function isValidStreamingReadTimeout(value: string): boolean {
+    if (value.trim() === "") return false;
+    const num = Number(value);
+    return Number.isInteger(num) && num >= 5 && num <= 120;
 }
 
 function isValidStreamingSegmentRetries(value: string): boolean {
