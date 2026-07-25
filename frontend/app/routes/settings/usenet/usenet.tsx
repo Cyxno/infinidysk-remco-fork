@@ -621,7 +621,13 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                 pipelining for faster queue first-segment fetches.
             </SettingsIntro>
 
-            <ManagedSetting configKeys={["usenet.cascade.enabled", "usenet.pipelining.enabled", "usenet.pipelining.depth"]}>
+            <ManagedSetting configKeys={[
+                "usenet.cascade.enabled",
+                "usenet.pipelining.enabled",
+                "usenet.pipelining.depth",
+                "usenet.article-miss-cache-ttl-seconds",
+                "usenet.article-miss-cache-max-entries",
+            ]}>
             <section className="rounded-lg border border-base-content/10 bg-base-100 px-3 py-2.5">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:gap-6">
                     <div className="flex shrink-0 items-center gap-1.5 text-base-content/60">
@@ -680,6 +686,47 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                     placeholder="8"
                                     value={config["usenet.pipelining.depth"] ?? ""}
                                     onChange={(e) => setNewConfig({ ...config, "usenet.pipelining.depth": e.target.value })}
+                                />
+                            </div>
+                        </Tooltip>
+                    </div>
+
+                    <div className="hidden h-4 w-px shrink-0 bg-base-content/10 lg:block" aria-hidden="true" />
+
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+                        <Tooltip content="After a provider (or storage group) reports a definitive article miss (430/451), skip re-probing that provider for the same article until the TTL expires. Default 300s (30–86400).">
+                            <div className="flex items-center gap-1.5">
+                                <Label htmlFor="article-miss-cache-ttl" className="mb-0 shrink-0 text-[11px] text-base-content/50">
+                                    Miss TTL
+                                </Label>
+                                <Input
+                                    type="text"
+                                    id="article-miss-cache-ttl"
+                                    className={`input-sm w-16 ${config["usenet.article-miss-cache-ttl-seconds"] !== undefined && config["usenet.article-miss-cache-ttl-seconds"] !== "" && !isArticleMissCacheTtl(config["usenet.article-miss-cache-ttl-seconds"]) ? "input-error" : ""}`}
+                                    placeholder="300"
+                                    value={config["usenet.article-miss-cache-ttl-seconds"] ?? ""}
+                                    onChange={(e) => setNewConfig({
+                                        ...config,
+                                        "usenet.article-miss-cache-ttl-seconds": e.target.value,
+                                    })}
+                                />
+                            </div>
+                        </Tooltip>
+                        <Tooltip content="Max negative-cache entries before oldest are evicted. Default 10000 (100–1000000).">
+                            <div className="flex items-center gap-1.5">
+                                <Label htmlFor="article-miss-cache-max" className="mb-0 shrink-0 text-[11px] text-base-content/50">
+                                    Miss max
+                                </Label>
+                                <Input
+                                    type="text"
+                                    id="article-miss-cache-max"
+                                    className={`input-sm w-20 ${config["usenet.article-miss-cache-max-entries"] !== undefined && config["usenet.article-miss-cache-max-entries"] !== "" && !isArticleMissCacheMaxEntries(config["usenet.article-miss-cache-max-entries"]) ? "input-error" : ""}`}
+                                    placeholder="10000"
+                                    value={config["usenet.article-miss-cache-max-entries"] ?? ""}
+                                    onChange={(e) => setNewConfig({
+                                        ...config,
+                                        "usenet.article-miss-cache-max-entries": e.target.value,
+                                    })}
                                 />
                             </div>
                         </Tooltip>
@@ -1916,9 +1963,23 @@ export function isUsenetSettingsUpdated(config: Record<string, string>, newConfi
         || config["usenet.pipelining.enabled"] !== newConfig["usenet.pipelining.enabled"]
         || config["usenet.pipelining.depth"] !== newConfig["usenet.pipelining.depth"]
         || config["usenet.cascade.enabled"] !== newConfig["usenet.cascade.enabled"]
+        || config["usenet.article-miss-cache-ttl-seconds"] !== newConfig["usenet.article-miss-cache-ttl-seconds"]
+        || config["usenet.article-miss-cache-max-entries"] !== newConfig["usenet.article-miss-cache-max-entries"]
 }
 
 export function isPositiveInteger(value: string) {
     const num = Number(value);
     return Number.isInteger(num) && num > 0 && value.trim() === num.toString();
+}
+
+export function isArticleMissCacheTtl(value: string) {
+    if (!isPositiveInteger(value)) return false;
+    const num = Number(value);
+    return num >= 30 && num <= 86400;
+}
+
+export function isArticleMissCacheMaxEntries(value: string) {
+    if (!isPositiveInteger(value)) return false;
+    const num = Number(value);
+    return num >= 100 && num <= 1_000_000;
 }
