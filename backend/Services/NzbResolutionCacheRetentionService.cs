@@ -1,12 +1,14 @@
 using Microsoft.Extensions.Hosting;
 using NzbWebDAV.Config;
+using NzbWebDAV.Extensions;
 using NzbWebDAV.Utils;
 using Serilog;
 
 namespace NzbWebDAV.Services;
 
 /// <summary>
-/// Hydrates the in-memory play-token cache from SQLite on startup, then
+/// Hydrates the in-memory play-token cache from SQLite after the host has started
+/// scheduling background work (so Kestrel can bind and /health can answer), then
 /// hourly purges groups older than the configured TTL.
 /// </summary>
 public class NzbResolutionCacheRetentionService(
@@ -14,25 +16,28 @@ public class NzbResolutionCacheRetentionService(
 {
     private static readonly TimeSpan TickInterval = TimeSpan.FromHours(1);
 
-    // Hydrate before the server accepts requests so pre-restart tokens
-    // never 404 during startup.
-    public override async Task StartAsync(CancellationToken cancellationToken)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Hydrate here rather than in StartAsync: reading the whole non-expired token
+        // table can outlast the entrypoint's /health retry window, and gating host
+        // startup on it boot-looped containers on upgrade (#665).
         try
         {
-            await cache.HydrateAsync(configManager.GetPlayResolutionCacheTtl(), cancellationToken)
+            await cache.HydrateAsync(configManager.GetPlayResolutionCacheTtl(), stoppingToken)
                 .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex.IsCancellationException(stoppingToken))
+        {
+            Log.Warning("Play-token cache hydrate stopped because nzbdav is shutting down");
+            Log.Debug(ex, "Play-token cache hydrate cancellation stack");
+            return;
         }
         catch (Exception ex)
         {
-            Log.Warning(ex, "Failed to hydrate play-token cache; starting empty");
+            Log.Warning("Failed to hydrate play-token cache; starting empty. Reason: {Reason}", ex.Message);
+            Log.Debug(ex, "Play-token cache hydrate failure stack");
         }
 
-        await base.StartAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -41,13 +46,16 @@ public class NzbResolutionCacheRetentionService(
                 await cache.PurgeExpiredAsync(configManager.GetPlayResolutionCacheTtl(), stoppingToken)
                     .ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (SigtermUtil.IsSigtermTriggered())
+            catch (Exception ex) when (ex.IsCancellationException() &&
+                                      (stoppingToken.IsCancellationRequested ||
+                                       SigtermUtil.IsSigtermTriggered()))
             {
                 return;
             }
             catch (Exception ex)
             {
-                Log.Warning(ex, "Play-token retention sweep failed");
+                Log.Warning("Play-token retention sweep failed. Reason: {Reason}", ex.Message);
+                Log.Debug(ex, "Play-token retention sweep failure stack");
             }
         }
     }
