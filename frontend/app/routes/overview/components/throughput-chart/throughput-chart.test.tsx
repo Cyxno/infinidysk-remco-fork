@@ -25,6 +25,11 @@ function render(points: ThroughputPoint[], totalErrors = 0) {
     );
 }
 
+function articlesPathD(markup: string): string {
+    const match = markup.match(/d="([^"]*)"[^>]*data-series="articles"|data-series="articles"[^>]*d="([^"]*)"/);
+    return match?.[1] ?? match?.[2] ?? "";
+}
+
 describe("ThroughputChart", () => {
     it("does not draw the green series when every article bucket is zero", () => {
         const markup = render([point(0, 1), point(0)], 1);
@@ -37,5 +42,16 @@ describe("ThroughputChart", () => {
         const markup = render([point(0), point(2)]);
 
         expect(markup).toContain('data-series="articles"');
+    });
+
+    it("skips zero article buckets so idle stretches do not draw a baseline", () => {
+        const markup = render([point(0), point(5), point(0), point(3), point(0)]);
+        const d = articlesPathD(markup);
+
+        expect(d).not.toBe("");
+        // Two non-zero spikes → two move commands (path breaks at zeros).
+        expect((d.match(/M/g) ?? []).length).toBe(2);
+        // Baseline y for this chart is 156.0 (VB_H - BOT_PAD); sparse path must not visit it.
+        expect(d).not.toContain(",156.0");
     });
 });

@@ -49,15 +49,12 @@ export function ThroughputChart({
         const innerH = VB_H - TOP_PAD - BOT_PAD;
         const y = (v: number) => VB_H - BOT_PAD - (v / scaleMax) * innerH;
 
-        const buildArticlesPath = () =>
-            points.map((p, i) => `${i === 0 ? "M" : "L"}${(i * xStep).toFixed(1)},${y(p.articles).toFixed(1)}`).join(" ");
-
         const xPct = (i: number) => points.length > 1 ? (i / (points.length - 1)) * 100 : 50;
         const yPct = (v: number) => 100 - ((v / scaleMax) * (1 - (TOP_PAD + BOT_PAD) / VB_H) * 100 + (BOT_PAD / VB_H) * 100);
 
         return {
-            articlesPath: buildArticlesPath(),
-            errorsPath: buildSparseErrorsPath(points, xStep, y),
+            articlesPath: buildSparseSeriesPath(points, p => p.articles, xStep, y),
+            errorsPath: buildSparseSeriesPath(points, p => p.errors, xStep, y),
             maxArticles: peakArticles,
             maxNetworkRate: maxRate,
             xPercent: xPct,
@@ -232,24 +229,25 @@ export function ThroughputChart({
     );
 }
 
-/** Sparse errors path: skip y=0 so red does not cover the green baseline. */
-function buildSparseErrorsPath(
+/** Sparse series path: skip y=0 so idle buckets do not draw a baseline stroke. */
+function buildSparseSeriesPath(
     points: ThroughputPoint[],
+    getValue: (p: ThroughputPoint) => number,
     xStep: number,
     y: (v: number) => number,
 ): string {
     const parts: string[] = [];
     let inSegment = false;
     for (let i = 0; i < points.length; i++) {
-        const err = points[i].errors;
+        const value = getValue(points[i]);
         const x = (i * xStep).toFixed(1);
-        const yy = y(err).toFixed(1);
-        if (err > 0) {
+        const yy = y(value).toFixed(1);
+        if (value > 0) {
             if (!inSegment) {
                 parts.push(`M${x},${yy}`);
                 inSegment = true;
                 // Isolated spikes need a tiny stroke segment to be visible.
-                const nextZero = i === points.length - 1 || points[i + 1].errors === 0;
+                const nextZero = i === points.length - 1 || getValue(points[i + 1]) === 0;
                 if (nextZero) {
                     const x2 = (i * xStep + Math.max(xStep * 0.15, 1)).toFixed(1);
                     parts.push(`L${x2},${yy}`);
