@@ -19,6 +19,7 @@ public sealed class StreamTraceBuffer
     public const int DefaultUiCapacity = 20_000;
     public static readonly int[] AllowedUiMinutes = [15, 30, 60];
 
+    private static readonly TimeSpan RetentionWindow = TimeSpan.FromHours(1);
     private static readonly JsonSerializerOptions CompactJson = new()
     {
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
@@ -28,9 +29,12 @@ public sealed class StreamTraceBuffer
     private readonly object _gate = new();
     private volatile StreamTraceEvent?[] _buffer = [];
     private long _nextSequence;
+    private long _nextRangeGeneration;
     private long _expiresAtUnixMs;
+    private long _retainedUntilUnixMs;
     private string _source = SourceEnv;
     private int _capacity;
+    private int _recording;
 
     // Newest session first for summary listing.
     private readonly ConcurrentDictionary<Guid, SessionMeta> _sessions = new();
@@ -61,6 +65,7 @@ public sealed class StreamTraceBuffer
     {
         get
         {
+            if (Volatile.Read(ref _recording) != 1) return false;
             var buffer = _buffer;
             if (buffer.Length == 0) return false;
             var expiresAt = Volatile.Read(ref _expiresAtUnixMs);
@@ -68,10 +73,16 @@ public sealed class StreamTraceBuffer
         }
     }
 
+    /// <summary>Recording has stopped but the capture is still held for a support pack.</summary>
+    public bool HasRetainedEvents =>
+        Volatile.Read(ref _recording) == 0
+        && _buffer.Length > 0
+        && Volatile.Read(ref _nextSequence) > 0;
+
     /// <summary>
     /// Turns tracing on for <paramref name="ttl"/>. A zero TTL means no expiry
     /// (used by the STREAM_TRACE_EVENTS bootstrap path). UI callers must pass a
-    /// positive TTL — the expiry sweeper will Disable() when it elapses.
+    /// positive TTL — the expiry sweeper will StopRecording() when it elapses.
     /// </summary>
     public StreamTraceStatus EnableFor(TimeSpan ttl, int capacity, string source)
     {
@@ -83,100 +94,192 @@ public sealed class StreamTraceBuffer
 
         lock (_gate)
         {
-            _buffer = new StreamTraceEvent?[capped];
-            _capacity = capped;
-            _source = isUi ? SourceUi : SourceEnv;
-            Volatile.Write(ref _expiresAtUnixMs, expiresAt);
-            _sessions.Clear();
-            Interlocked.Exchange(ref _nextSequence, 0);
+            if (_recording == 1)
+            {
+                // Already capturing (UI re-enable, or UI enable while STREAM_TRACE_EVENTS
+                // is recording). Refresh TTL/source only — wiping would destroy the
+                // evidence StopRecording/Discard exist to protect.
+                _source = isUi ? SourceUi : SourceEnv;
+                Volatile.Write(ref _expiresAtUnixMs, expiresAt);
+                Volatile.Write(ref _retainedUntilUnixMs, 0);
+            }
+            else if (_buffer.Length > 0 && _nextSequence > 0)
+            {
+                // Resume the retained ring exactly as-is. Capacity stays unchanged;
+                // especially do not shrink an env-originated capture behind the operator's back.
+                _source = isUi ? SourceUi : SourceEnv;
+                Volatile.Write(ref _expiresAtUnixMs, expiresAt);
+                Volatile.Write(ref _retainedUntilUnixMs, 0);
+                Volatile.Write(ref _recording, 1);
+            }
+            else
+            {
+                // No retained evidence: start a fresh capture as today.
+                _buffer = new StreamTraceEvent?[capped];
+                _capacity = capped;
+                _source = isUi ? SourceUi : SourceEnv;
+                Volatile.Write(ref _expiresAtUnixMs, expiresAt);
+                Volatile.Write(ref _retainedUntilUnixMs, 0);
+                _sessions.Clear();
+                _nextSequence = 0;
+                Volatile.Write(ref _recording, 1);
+            }
         }
 
         return GetStatus();
     }
 
     /// <summary>
-    /// Releases the ring buffer and session index so the GC can reclaim the RAM.
-    /// Safe to call when already disabled.
+    /// Stops recording but keeps the capture addressable so a support pack collected
+    /// afterwards still contains it. The natural flow is enable, reproduce, turn off,
+    /// download — clearing here silently destroyed the evidence that was just captured.
+    /// The retention deadline releases the memory later if nobody discards it.
     /// </summary>
-    public StreamTraceStatus Disable()
+    public StreamTraceStatus StopRecording()
     {
         lock (_gate)
         {
-            _buffer = [];
-            Volatile.Write(ref _expiresAtUnixMs, 0);
-            _sessions.Clear();
-            Interlocked.Exchange(ref _nextSequence, 0);
-        }
+            // Idempotent: repeated "off" calls must not extend the retention deadline.
+            if (_recording == 0)
+                return GetStatusNoLock();
 
-        return GetStatus();
+            Volatile.Write(ref _recording, 0);
+            Volatile.Write(ref _expiresAtUnixMs, 0);
+            if (_nextSequence > 0)
+                Volatile.Write(ref _retainedUntilUnixMs, Now() + (long)RetentionWindow.TotalMilliseconds);
+            else
+                ReleaseBufferNoLock();
+
+            return GetStatusNoLock();
+        }
     }
 
     /// <summary>
-    /// True when a positive TTL has elapsed and Disable() has not yet run.
+    /// Releases the ring buffer and session index so the GC can reclaim the RAM,
+    /// discarding anything captured. Safe to call at any time.
+    /// </summary>
+    public StreamTraceStatus Discard()
+    {
+        lock (_gate)
+        {
+            ReleaseBufferNoLock();
+            return GetStatusNoLock();
+        }
+    }
+
+    /// <summary>
+    /// True when a positive TTL has elapsed and StopRecording() has not yet run.
     /// </summary>
     public bool IsExpired
     {
         get
         {
             var expiresAt = Volatile.Read(ref _expiresAtUnixMs);
-            return expiresAt > 0 && expiresAt <= Now() && _buffer.Length > 0;
+            return Volatile.Read(ref _recording) != 0
+                && expiresAt > 0
+                && expiresAt <= Now()
+                && _buffer.Length > 0;
+        }
+    }
+
+    /// <summary>True once the retention deadline has passed and Discard() has not yet run.</summary>
+    public bool IsRetentionExpired
+    {
+        get
+        {
+            var until = Volatile.Read(ref _retainedUntilUnixMs);
+            return until > 0 && until <= Now() && HasRetainedEvents;
         }
     }
 
     public StreamTraceStatus GetStatus()
     {
         lock (_gate)
-        {
-            var expiresAt = Volatile.Read(ref _expiresAtUnixMs);
-            var enabled = _buffer.Length > 0 && (expiresAt == 0 || expiresAt > Now());
-            return new StreamTraceStatus(
-                Enabled: enabled,
-                Source: _source,
-                ExpiresAtUnixMs: expiresAt,
-                Capacity: Math.Max(_capacity, 100),
-                EventCount: Volatile.Read(ref _nextSequence),
-                SessionCount: _sessions.Count);
-        }
+            return GetStatusNoLock();
     }
 
-    public void Record(StreamTraceEvent entry)
+    private StreamTraceStatus GetStatusNoLock()
     {
-        if (!Enabled) return;
-        var sequence = Interlocked.Increment(ref _nextSequence);
-        var withSeq = entry with { Sequence = sequence };
-        var buffer = _buffer;
-        if (buffer.Length == 0) return;
+        var expiresAt = Volatile.Read(ref _expiresAtUnixMs);
+        var retainedUntil = Volatile.Read(ref _retainedUntilUnixMs);
+        var recording = Volatile.Read(ref _recording) == 1;
+        var enabled = recording && _buffer.Length > 0 && (expiresAt == 0 || expiresAt > Now());
+        return new StreamTraceStatus(
+            Enabled: enabled,
+            Source: _source,
+            ExpiresAtUnixMs: expiresAt,
+            Capacity: Math.Max(_capacity, 100),
+            EventCount: Volatile.Read(ref _nextSequence),
+            SessionCount: _sessions.Count,
+            Retained: !recording && _buffer.Length > 0 && _nextSequence > 0,
+            RetainedUntilUnixMs: retainedUntil);
+    }
+
+    private void ReleaseBufferNoLock()
+    {
+        _buffer = [];
+        Volatile.Write(ref _recording, 0);
+        Volatile.Write(ref _expiresAtUnixMs, 0);
+        Volatile.Write(ref _retainedUntilUnixMs, 0);
+        _sessions.Clear();
+        _nextSequence = 0;
+    }
+
+    internal void ExpireRetentionForTests()
+    {
         lock (_gate)
         {
-            buffer = _buffer;
-            if (buffer.Length == 0) return;
-            buffer[(sequence - 1) % buffer.Length] = withSeq;
+            if (_recording == 0 && _buffer.Length > 0 && _nextSequence > 0)
+                Volatile.Write(ref _retainedUntilUnixMs, Now() - 1);
         }
-
-        _sessions.AddOrUpdate(
-            entry.SessionId,
-            _ => new SessionMeta
-            {
-                SessionId = entry.SessionId,
-                FirstAt = entry.AtUnixMs,
-                LastAt = entry.AtUnixMs,
-                Path = entry.Path,
-                EventCount = 1,
-                LastKind = entry.Kind,
-            },
-            (_, existing) =>
-            {
-                existing.LastAt = entry.AtUnixMs;
-                existing.EventCount++;
-                existing.LastKind = entry.Kind;
-                if (!string.IsNullOrEmpty(entry.Path)) existing.Path = entry.Path;
-                return existing;
-            });
-
-        TrimSessionsIfNeeded();
     }
 
-    public void RangeOpen(
+    private SessionMeta? Record(StreamTraceEvent entry)
+    {
+        if (!Enabled) return null;
+        lock (_gate)
+        {
+            var expiresAt = Volatile.Read(ref _expiresAtUnixMs);
+            if (_recording != 1
+                || _buffer.Length == 0
+                || (expiresAt > 0 && expiresAt <= Now()))
+                return null;
+
+            var sequence = ++_nextSequence;
+            var withSeq = entry with { Sequence = sequence };
+            var buffer = _buffer;
+            buffer[(sequence - 1) % buffer.Length] = withSeq;
+
+            var session = _sessions.AddOrUpdate(
+                entry.SessionId,
+                _ => new SessionMeta
+                {
+                    SessionId = entry.SessionId,
+                    FirstAt = entry.AtUnixMs,
+                    LastAt = entry.AtUnixMs,
+                    Path = entry.Path,
+                    EventCount = 1,
+                    LastKind = entry.Kind,
+                },
+                (_, existing) =>
+                {
+                    existing.LastAt = entry.AtUnixMs;
+                    existing.EventCount++;
+                    existing.LastKind = entry.Kind;
+                    if (!string.IsNullOrEmpty(entry.Path)) existing.Path = entry.Path;
+                    return existing;
+                });
+
+            TrimSessionsIfNeeded();
+            return session;
+        }
+    }
+
+    /// <summary>
+    /// Opens a trace generation for this exact HTTP range and returns the token the
+    /// request must carry through its async flow. Returning null means tracing is off.
+    /// </summary>
+    public StreamTraceRangeContext? RangeOpen(
         Guid sessionId,
         string path,
         string method,
@@ -186,7 +289,9 @@ public sealed class StreamTraceBuffer
         string? userAgent,
         string? clientIp)
     {
-        Record(new StreamTraceEvent
+        if (!Enabled) return null;
+        var generation = Interlocked.Increment(ref _nextRangeGeneration);
+        var session = Record(new StreamTraceEvent
         {
             Sequence = 0,
             AtUnixMs = Now(),
@@ -199,7 +304,12 @@ public sealed class StreamTraceBuffer
             FileSize = fileSize,
             UserAgent = userAgent,
             ClientIp = clientIp,
+            RangeGeneration = generation,
         });
+        if (session is null)
+            return null;
+        session.OpenGeneration(generation);
+        return new StreamTraceRangeContext(sessionId, generation);
     }
 
     public void Seek(Guid sessionId, long offset)
@@ -279,39 +389,59 @@ public sealed class StreamTraceBuffer
     }
 
     /// <summary>
-    /// Adds time spent blocked on <paramref name="kind"/> to the current range of
-    /// <paramref name="sessionId"/>. Ticks are accumulated rather than milliseconds so
+    /// Adds time spent blocked on <paramref name="kind"/> to the range identified by
+    /// <paramref name="range"/>. Ticks are accumulated rather than milliseconds so
     /// the many sub-millisecond client writes in a range still add up. No-ops when
-    /// tracing is off or the session has no open range.
+    /// the token is null or the generation bucket is gone.
     /// </summary>
-    public void AddStall(Guid sessionId, StreamStallKind kind, TimeSpan elapsed)
+    public void AddStall(StreamTraceRangeContext? range, StreamStallKind kind, TimeSpan elapsed)
     {
-        if (!Enabled || elapsed <= TimeSpan.Zero) return;
-        if (!_sessions.TryGetValue(sessionId, out var session)) return;
-        session.Stalls.Add(kind, elapsed.Ticks);
+        if (range is not { } value) return;
+        if (elapsed <= TimeSpan.Zero) return;
+        if (!_sessions.TryGetValue(value.SessionId, out var session)) return;
+        session.Bucket(value.Generation)?.Add(kind, elapsed.Ticks);
     }
 
     /// <summary>
-    /// Records a connection acquisition for the current range: how long the borrower
+    /// Records provider-wait time for a fetch started under <paramref name="range"/>.
+    /// Late completions still credit the originating generation via the live totals
+    /// referenced by that range's <c>RangeEnd</c> event.
+    /// </summary>
+    public void AddFetchWait(StreamTraceRangeContext? range, TimeSpan elapsed)
+    {
+        if (range is not { } value) return;
+        if (!_sessions.TryGetValue(value.SessionId, out var session)) return;
+        session.Bucket(value.Generation)?.AddFetch(Math.Max(0, elapsed.Ticks));
+    }
+
+    /// <summary>
+    /// Records a connection acquisition for the given range: how long the borrower
     /// waited, and whether the pool handed back an idle connection or had to open a
     /// new one. A range full of fresh handshakes points at connection churn.
     /// </summary>
-    public void ConnectionAcquired(Guid sessionId, TimeSpan wait, bool wasReused)
+    public void ConnectionAcquired(StreamTraceRangeContext? range, TimeSpan wait, bool wasReused)
     {
-        if (!Enabled) return;
-        if (!_sessions.TryGetValue(sessionId, out var session)) return;
-        session.Stalls.AddConnection(wait.Ticks, wasReused);
+        if (range is not { } value) return;
+        if (!_sessions.TryGetValue(value.SessionId, out var session)) return;
+        session.Bucket(value.Generation)?.AddConnection(wait.Ticks, wasReused);
     }
 
+    /// <summary>
+    /// Records how a range finished. <paramref name="range"/> may be null when no range was
+    /// opened — tracing started mid-read, or the read timed out while the stream was still
+    /// opening. That terminal event is the most useful one in the trace, so it is still
+    /// recorded; it simply carries no generation and no stall attribution.
+    /// </summary>
     public void RangeEnd(
         Guid sessionId,
+        StreamTraceRangeContext? range,
         ReadSession.EndReasonCode endReason,
         long bytesServed,
         string? message = null)
     {
-        var stalls = _sessions.TryGetValue(sessionId, out var session)
-            ? session.Stalls.DrainForRange()
-            : default;
+        var stalls = range is { } value && _sessions.TryGetValue(value.SessionId, out var session)
+            ? session.Bucket(value.Generation)
+            : null;
 
         Record(new StreamTraceEvent
         {
@@ -322,13 +452,8 @@ public sealed class StreamTraceBuffer
             EndReason = StreamTraceEvent.EndReasonName(endReason),
             BytesServed = bytesServed,
             Message = message,
-            ConnectionWaitMs = stalls.ConnectionWaitMs,
-            ProviderWaitMs = stalls.ProviderWaitMs,
-            BodyDrainMs = stalls.BodyDrainMs,
-            ConsumerWaitMs = stalls.ConsumerWaitMs,
-            ClientWriteMs = stalls.ClientWriteMs,
-            ConnectionsOpened = stalls.ConnectionsOpened,
-            ConnectionsReused = stalls.ConnectionsReused,
+            RangeGeneration = range?.Generation,
+            RangeStalls = stalls,
         });
     }
 
@@ -349,7 +474,7 @@ public sealed class StreamTraceBuffer
 
     public IReadOnlyList<StreamTraceEvent> GetSessionEvents(Guid sessionId)
     {
-        if (!Enabled && _buffer.Length == 0) return [];
+        if (_buffer.Length == 0) return [];
 
         StreamTraceEvent?[] copy;
         lock (_gate)
@@ -414,91 +539,37 @@ public sealed class StreamTraceBuffer
 
     private sealed class SessionMeta
     {
+        // Ranges are attributed by generation because a fetch started in one range can
+        // resolve after it ended. A handful of closed generations stay addressable so
+        // late completions can still update the RangeEnd event that references that bucket.
+        // Sixteen remains tiny but avoids dropping ordinary rapid-scrub completions.
+        private const int RetainedGenerations = 16;
+        private readonly object _generationGate = new();
+        private readonly Dictionary<long, StreamTraceRangeStalls> _buckets = new();
+
         public Guid SessionId { get; init; }
         public long FirstAt { get; set; }
         public long LastAt { get; set; }
         public string? Path { get; set; }
         public int EventCount { get; set; }
         public string? LastKind { get; set; }
-        public StallTotals Stalls { get; } = new();
-    }
 
-    /// <summary>
-    /// Per-range stall accumulator. Written concurrently by every prefetch task and the
-    /// consumer, so every field moves through Interlocked; drained and zeroed when the
-    /// range ends so the next range on the same session starts clean.
-    /// </summary>
-    private sealed class StallTotals
-    {
-        private long _connectionWaitTicks;
-        private long _providerWaitTicks;
-        private long _bodyDrainTicks;
-        private long _consumerWaitTicks;
-        private long _clientWriteTicks;
-        private long _connectionsOpened;
-        private long _connectionsReused;
-
-        public void Add(StreamStallKind kind, long ticks)
+        public void OpenGeneration(long generation)
         {
-            switch (kind)
+            lock (_generationGate)
             {
-                case StreamStallKind.ConnectionWait:
-                    Interlocked.Add(ref _connectionWaitTicks, ticks);
-                    break;
-                case StreamStallKind.ProviderWait:
-                    Interlocked.Add(ref _providerWaitTicks, ticks);
-                    break;
-                case StreamStallKind.BodyDrain:
-                    Interlocked.Add(ref _bodyDrainTicks, ticks);
-                    break;
-                case StreamStallKind.ConsumerWait:
-                    Interlocked.Add(ref _consumerWaitTicks, ticks);
-                    break;
-                case StreamStallKind.ClientWrite:
-                    Interlocked.Add(ref _clientWriteTicks, ticks);
-                    break;
+                _buckets[generation] = new StreamTraceRangeStalls();
+                while (_buckets.Count > RetainedGenerations)
+                    _buckets.Remove(_buckets.Keys.Min());
             }
         }
 
-        public void AddConnection(long waitTicks, bool wasReused)
+        public StreamTraceRangeStalls? Bucket(long generation)
         {
-            if (waitTicks > 0) Interlocked.Add(ref _connectionWaitTicks, waitTicks);
-            if (wasReused)
-                Interlocked.Increment(ref _connectionsReused);
-            else
-                Interlocked.Increment(ref _connectionsOpened);
-        }
-
-        public StallSnapshot DrainForRange() => new(
-            Milliseconds(ref _connectionWaitTicks),
-            Milliseconds(ref _providerWaitTicks),
-            Milliseconds(ref _bodyDrainTicks),
-            Milliseconds(ref _consumerWaitTicks),
-            Milliseconds(ref _clientWriteTicks),
-            Count(ref _connectionsOpened),
-            Count(ref _connectionsReused));
-
-        private static long? Milliseconds(ref long ticks)
-        {
-            var drained = Interlocked.Exchange(ref ticks, 0);
-            return drained <= 0 ? null : drained / TimeSpan.TicksPerMillisecond;
-        }
-
-        private static long? Count(ref long counter)
-        {
-            var drained = Interlocked.Exchange(ref counter, 0);
-            return drained <= 0 ? null : drained;
+            if (generation <= 0) return null;
+            lock (_generationGate) return _buckets.GetValueOrDefault(generation);
         }
     }
-
-    private readonly record struct StallSnapshot(
-        long? ConnectionWaitMs,
-        long? ProviderWaitMs,
-        long? BodyDrainMs,
-        long? ConsumerWaitMs,
-        long? ClientWriteMs,
-        long? ConnectionsOpened,
-        long? ConnectionsReused);
 }
 
 public sealed record StreamTraceSessionSummary(

@@ -34,16 +34,25 @@ public sealed record StreamTraceEvent
     [JsonPropertyName("attempt")] public int? Attempt { get; init; }
     [JsonPropertyName("message")] public string? Message { get; init; }
 
-    // Stall attribution, emitted on RangeEnd and reset per range. These overlap by
-    // design — segments are fetched concurrently — so they are shares of a range's
-    // wall clock, not a partition of it.
-    [JsonPropertyName("connWaitMs")] public long? ConnectionWaitMs { get; init; }
-    [JsonPropertyName("providerWaitMs")] public long? ProviderWaitMs { get; init; }
-    [JsonPropertyName("bodyDrainMs")] public long? BodyDrainMs { get; init; }
-    [JsonPropertyName("consumerWaitMs")] public long? ConsumerWaitMs { get; init; }
-    [JsonPropertyName("clientWriteMs")] public long? ClientWriteMs { get; init; }
-    [JsonPropertyName("connOpened")] public long? ConnectionsOpened { get; init; }
-    [JsonPropertyName("connReused")] public long? ConnectionsReused { get; init; }
+    [JsonPropertyName("rangeGeneration")] public long? RangeGeneration { get; init; }
+
+    /// <summary>
+    /// Live totals for this range generation. Kept after RangeEnd so late fetch
+    /// completions still update exported JSON; ignored by the serializer.
+    /// </summary>
+    [JsonIgnore]
+    internal StreamTraceRangeStalls? RangeStalls { get; init; }
+
+    // Stall attribution on RangeEnd. These overlap by design — segments are fetched
+    // concurrently — so they are shares of a range's wall clock, not a partition of it.
+    [JsonPropertyName("connWaitMs")] public long? ConnectionWaitMs => RangeStalls?.ConnectionWaitMs;
+    [JsonPropertyName("providerWaitMs")] public long? ProviderWaitMs => RangeStalls?.ProviderWaitMs;
+    [JsonPropertyName("bodyDrainMs")] public long? BodyDrainMs => RangeStalls?.BodyDrainMs;
+    [JsonPropertyName("consumerWaitMs")] public long? ConsumerWaitMs => RangeStalls?.ConsumerWaitMs;
+    [JsonPropertyName("clientWriteMs")] public long? ClientWriteMs => RangeStalls?.ClientWriteMs;
+    [JsonPropertyName("connOpened")] public long? ConnectionsOpened => RangeStalls?.ConnectionsOpened;
+    [JsonPropertyName("connReused")] public long? ConnectionsReused => RangeStalls?.ConnectionsReused;
+    [JsonPropertyName("fetches")] public long? Fetches => RangeStalls?.Fetches;
 
     public static string StatusName(SegmentFetch.FetchStatus status) => status.ToString();
 

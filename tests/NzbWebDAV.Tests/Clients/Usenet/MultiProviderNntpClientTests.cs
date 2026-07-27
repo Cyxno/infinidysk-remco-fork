@@ -8,6 +8,7 @@ using NzbWebDAV.Database.Models.Metrics;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Models;
 using NzbWebDAV.Services.Metrics;
+using NzbWebDAV.Services.StreamTrace;
 using UsenetSharp.Models;
 using UsenetSharp.Streams;
 
@@ -15,6 +16,25 @@ namespace NzbWebDAV.Tests.Clients.Usenet;
 
 public class MultiProviderNntpClientTests
 {
+    [Fact]
+    public void BeginStreamTraceRangeScope_RestoresNestedContext()
+    {
+        var rangeA = new StreamTraceRangeContext(Guid.NewGuid(), 1);
+        var rangeB = new StreamTraceRangeContext(Guid.NewGuid(), 2);
+
+        Assert.Null(MultiProviderNntpClient.CurrentStreamTraceRange);
+        using (MultiProviderNntpClient.BeginStreamTraceRangeScope(rangeA))
+        {
+            Assert.Equal(rangeA, MultiProviderNntpClient.CurrentStreamTraceRange);
+            using (MultiProviderNntpClient.BeginStreamTraceRangeScope(rangeB))
+            {
+                Assert.Equal(rangeB, MultiProviderNntpClient.CurrentStreamTraceRange);
+            }
+            Assert.Equal(rangeA, MultiProviderNntpClient.CurrentStreamTraceRange);
+        }
+        Assert.Null(MultiProviderNntpClient.CurrentStreamTraceRange);
+    }
+
     [Fact]
     public async Task BatchResponse_WithUnexpectedResponse_RetriesOnSameProvider()
     {

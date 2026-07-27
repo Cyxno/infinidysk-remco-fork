@@ -21,6 +21,10 @@ public class DatabaseStoreSymlinkCollection(
     public override string UniqueKey => davDirectory.Id.ToString();
     public override DateTime CreatedAt => davDirectory.CreatedAt;
 
+    // Every nested collection under the virtual mount shares one throttle window so a
+    // per-release metadata write storm cannot emit one Warning per directory.
+    protected override string WriteRejectionScopeKey => "completed-symlinks";
+
     private Guid TargetId => davDirectory.Id == DavItem.SymlinkFolder.Id ? DavItem.ContentFolder.Id : davDirectory.Id;
     private DeletedFileManager DeletedFiles => new(davDirectory.Id);
 

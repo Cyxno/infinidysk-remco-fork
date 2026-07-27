@@ -49,6 +49,9 @@ public sealed class LogThrottle
     /// </summary>
     public void Reset(string key) => _states.TryRemove(key, out _);
 
+    /// <summary>Drops every throttle window. Test-only; production keys age out on their own.</summary>
+    internal void Clear() => _states.Clear();
+
     private sealed class State
     {
         public long LastLoggedAtMs;

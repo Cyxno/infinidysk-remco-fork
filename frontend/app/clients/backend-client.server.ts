@@ -1,3 +1,10 @@
+import {
+    toStreamTracingStatus,
+    type StreamTracingStatus,
+} from "~/utils/stream-tracing-status";
+
+export type { StreamTracingStatus };
+
 export class WebdavDirectoryNotFoundError extends Error {
     public constructor(public readonly directory: string) {
         super("The WebDAV directory does not exist.");
@@ -296,14 +303,7 @@ class BackendClient {
         const data = await call("/api/get-stream-traces?limit=1", "Failed to get stream tracing status", {
             method: "GET",
         });
-        return {
-            enabled: Boolean(data.enabled),
-            source: data.source ?? "env",
-            expiresAtUnixMs: Number(data.expiresAtUnixMs ?? 0),
-            capacity: Number(data.capacity ?? 0),
-            eventCount: Number(data.eventCount ?? 0),
-            sessionCount: Number(data.sessionCount ?? 0),
-        };
+        return toStreamTracingStatus(data);
     }
 
     public async setStreamTracing(enabled: boolean, minutes: number = 30): Promise<StreamTracingStatus> {
@@ -314,14 +314,14 @@ class BackendClient {
                 ["minutes", String(minutes)],
             ),
         });
-        return {
-            enabled: Boolean(data.enabled),
-            source: data.source ?? "ui",
-            expiresAtUnixMs: Number(data.expiresAtUnixMs ?? 0),
-            capacity: Number(data.capacity ?? 0),
-            eventCount: Number(data.eventCount ?? 0),
-            sessionCount: Number(data.sessionCount ?? 0),
-        };
+        return toStreamTracingStatus(data);
+    }
+
+    public async discardStreamTraces(): Promise<StreamTracingStatus> {
+        const data = await call("/api/discard-stream-traces", "Failed to discard stream traces", {
+            method: "POST",
+        });
+        return toStreamTracingStatus(data);
     }
 
     public async getWatchtower(params: WatchtowerQuery = {}): Promise<WatchtowerData> {
@@ -859,15 +859,6 @@ export type GetLogsResponse = {
     oldestSequence: number,
     newestSequence: number,
     capacity: number,
-}
-
-export type StreamTracingStatus = {
-    enabled: boolean,
-    source: string,
-    expiresAtUnixMs: number,
-    capacity: number,
-    eventCount: number,
-    sessionCount: number,
 }
 
 export type LogBroadcastMessage = {

@@ -4,9 +4,9 @@ using Serilog;
 namespace NzbWebDAV.Services.StreamTrace;
 
 /// <summary>
-/// Disables UI-enabled stream tracing when its TTL elapses so RAM is released
-/// even if the operator forgets to turn it off. Env-sourced tracing (no expiry)
-/// is left alone.
+/// Stops UI-enabled stream tracing when its TTL elapses, then releases retained
+/// captures after their support-pack window. Env-sourced tracing (no expiry) is
+/// left alone until explicitly stopped.
 /// </summary>
 public sealed class StreamTraceExpiryService(
     StreamTraceBuffer buffer,
@@ -27,11 +27,20 @@ public sealed class StreamTraceExpiryService(
                 if (buffer.IsExpired)
                 {
                     var before = buffer.GetStatus();
-                    var status = buffer.Disable();
+                    var status = buffer.StopRecording();
                     Log.Information(
-                        "Stream tracing expired; released {Events:n0} buffered events from {Source}",
+                        "Stream tracing expired; retaining {Events:n0} events from {Source} for support packs",
                         before.EventCount,
                         before.Source);
+                    await broadcaster.BroadcastAsync(status).ConfigureAwait(false);
+                }
+                else if (buffer.IsRetentionExpired)
+                {
+                    var before = buffer.GetStatus();
+                    var status = buffer.Discard();
+                    Log.Information(
+                        "Released {Events:n0} retained stream-trace events after the retention window",
+                        before.EventCount);
                     await broadcaster.BroadcastAsync(status).ConfigureAwait(false);
                 }
                 else

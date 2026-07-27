@@ -696,15 +696,15 @@ public class MultiConnectionNntpClient(
         SemaphorePriority priority,
         CancellationToken ct)
     {
-        var sessionId = MultiProviderNntpClient.CurrentReadSessionId;
-        if (sessionId is null || !StreamTrace.IsRecording)
+        var traceRange = MultiProviderNntpClient.CurrentStreamTraceRange;
+        if (traceRange is null)
             return await connectionPool.GetConnectionLockAsync(priority, ct).ConfigureAwait(false);
 
         var started = Stopwatch.GetTimestamp();
         var connectionLock = await connectionPool.GetConnectionLockAsync(priority, ct)
             .ConfigureAwait(false);
         StreamTrace.TryConnectionAcquired(
-            sessionId, Stopwatch.GetElapsedTime(started), connectionLock.WasReused);
+            traceRange, Stopwatch.GetElapsedTime(started), connectionLock.WasReused);
         return connectionLock;
     }
 

@@ -1,5 +1,6 @@
 using NWebDav.Server;
 using NWebDav.Server.Stores;
+using NzbWebDAV.Tests.TestUtils;
 using NzbWebDAV.WebDav.Base;
 using NzbWebDAV.WebDav.Requests;
 using Serilog;
@@ -8,6 +9,7 @@ using Serilog.Events;
 
 namespace NzbWebDAV.Tests.WebDav;
 
+[Collection(nameof(GlobalLoggerCollection))]
 public sealed class BaseStoreCollectionTests
 {
     private const int MethodNotAllowed = 405;
@@ -77,6 +79,7 @@ public sealed class BaseStoreCollectionTests
     [Fact]
     public async Task ReadonlyCollection_AggregatesRepeatedWriteRejectionsIntoOneWarning()
     {
+        ReadonlyWriteRejectionLog.ResetForTests();
         var sink = new CollectingSink();
         var previous = Log.Logger;
         Log.Logger = new LoggerConfiguration()
@@ -86,12 +89,7 @@ public sealed class BaseStoreCollectionTests
 
         try
         {
-            // A distinct UniqueKey keeps this case independent of the process-wide throttle
-            // state left behind by other tests.
-            var collection = new ReadonlyCollection
-            {
-                Key = $"flood-{Guid.NewGuid()}",
-            };
+            var collection = new ReadonlyCollection();
 
             for (var i = 0; i < 25; i++)
             {
@@ -104,6 +102,67 @@ public sealed class BaseStoreCollectionTests
 
             Assert.Single(warnings);
             Assert.Equal(25, debugs.Count);
+        }
+        finally
+        {
+            Log.Logger = previous;
+        }
+    }
+
+    [Fact]
+    public async Task ReadonlyCollections_AcrossManyDirectories_ShareOneWarningWindow()
+    {
+        ReadonlyWriteRejectionLog.ResetForTests();
+        var sink = new CollectingSink();
+        var previous = Log.Logger;
+        Log.Logger = new LoggerConfiguration()
+            .MinimumLevel.Debug()
+            .WriteTo.Sink(sink)
+            .CreateLogger();
+
+        try
+        {
+            // One collection per release, exactly as a per-release sidecar write storm sees it.
+            for (var release = 0; release < 40; release++)
+            {
+                var collection = new ReadonlyCollection { Key = $"release-{release}" };
+                await collection.CreateItemAsync(
+                    "metadata.nfo", Stream.Null, overwrite: true, CancellationToken.None);
+            }
+
+            Assert.Single(sink.Events, e => e.Level == LogEventLevel.Warning);
+            Assert.Equal(40, sink.Events.Count(e => e.Level == LogEventLevel.Debug));
+        }
+        finally
+        {
+            Log.Logger = previous;
+        }
+    }
+
+    // Covers the override shape DatabaseStoreSymlinkCollection uses ("completed-symlinks"),
+    // where sibling release directories are distinct types-per-instance only by UniqueKey.
+    [Fact]
+    public async Task OverriddenScopeKey_CollapsesManyDirectoriesOntoOneWindow()
+    {
+        ReadonlyWriteRejectionLog.ResetForTests();
+        var sink = new CollectingSink();
+        var previous = Log.Logger;
+        Log.Logger = new LoggerConfiguration()
+            .MinimumLevel.Debug()
+            .WriteTo.Sink(sink)
+            .CreateLogger();
+
+        try
+        {
+            for (var release = 0; release < 40; release++)
+            {
+                var collection = new SymlinkScopedCollection { Key = $"release-{release}" };
+                await collection.CreateItemAsync(
+                    "metadata.nfo", Stream.Null, overwrite: true, CancellationToken.None);
+            }
+
+            Assert.Single(sink.Events, e => e.Level == LogEventLevel.Warning);
+            Assert.Equal(40, sink.Events.Count(e => e.Level == LogEventLevel.Debug));
         }
         finally
         {
@@ -147,6 +206,26 @@ public sealed class BaseStoreCollectionTests
 
             return Task.FromResult<IStoreItem?>(null);
         }
+
+        protected override async IAsyncEnumerable<IStoreItem> GetAllItemsAsync(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+    }
+
+    private sealed class SymlinkScopedCollection : BaseStoreReadonlyCollection
+    {
+        public string Key { get; init; } = "symlink-scoped";
+
+        public override string Name => "release";
+        public override string UniqueKey => Key;
+        public override DateTime CreatedAt => DateTime.UnixEpoch;
+        protected override string WriteRejectionScopeKey => "completed-symlinks";
+
+        protected override Task<IStoreItem?> GetItemAsync(GetItemRequest request)
+            => Task.FromResult<IStoreItem?>(null);
 
         protected override async IAsyncEnumerable<IStoreItem> GetAllItemsAsync(
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)

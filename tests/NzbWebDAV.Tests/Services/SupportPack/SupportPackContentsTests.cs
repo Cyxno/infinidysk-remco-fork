@@ -218,7 +218,7 @@ public sealed class SupportPackContentsTests : IDisposable
     }
 
     [Fact]
-    public async Task Pack_IncludesStreamTracesOnlyWhileTracingIsEnabled()
+    public async Task Pack_IncludesStreamTracesWhileTracingIsEnabled()
     {
         var disabled = await ReadPackEntriesAsync(
             new LogBufferSink(10),
@@ -238,10 +238,10 @@ public sealed class SupportPackContentsTests : IDisposable
         var buffer = new StreamTraceBuffer(100, enabled: false);
         buffer.EnableFor(TimeSpan.FromMinutes(15), 100, StreamTraceBuffer.SourceUi);
         var session = Guid.NewGuid();
-        buffer.RangeOpen(session, "/view/movie.mkv", "GET", 0, 99, 1000, "ua", "203.0.113.10");
+        var range = buffer.RangeOpen(session, "/view/movie.mkv", "GET", 0, 99, 1000, "ua", "203.0.113.10");
         buffer.Seek(session, 50);
         buffer.Segment(session, "provider-a", SegmentFetch.FetchStatus.Ok, 12, 0, "msgid@a");
-        buffer.RangeEnd(session, ReadSession.EndReasonCode.Completed, 100);
+        buffer.RangeEnd(session, range, ReadSession.EndReasonCode.Completed, 100);
 
         var enabled = await ReadPackEntriesAsync(
             new LogBufferSink(10),
@@ -265,6 +265,53 @@ public sealed class SupportPackContentsTests : IDisposable
         Assert.Equal("ui", tracing.GetProperty("source").GetString());
         Assert.True(tracing.GetProperty("expiresAtUnixMs").GetInt64() > 0);
         Assert.True(tracing.GetProperty("eventCount").GetInt64() >= 4);
+    }
+
+    [Fact]
+    public async Task Pack_IncludesRetainedStreamTracesUntilDiscarded()
+    {
+        var buffer = new StreamTraceBuffer(100, enabled: false);
+        buffer.EnableFor(TimeSpan.FromMinutes(15), 100, StreamTraceBuffer.SourceUi);
+        var session = Guid.NewGuid();
+        buffer.RangeOpen(session, "/view/retained.mkv", "GET", 0, 99, 1000, null, null);
+        buffer.StopRecording();
+
+        var retained = await ReadPackEntriesAsync(
+            new LogBufferSink(10),
+            new WarningLogBuffer(new LogBufferSink(50)),
+            buffer);
+
+        using (var manifest = JsonDocument.Parse(retained["manifest.json"]))
+        {
+            Assert.Equal(
+                "included",
+                manifest.RootElement.GetProperty("sections").GetProperty("streamTraces").GetString());
+        }
+
+        Assert.Contains("/view/retained.mkv", retained["stream-traces/sessions.json"]);
+        Assert.Contains("RangeOpen", retained["stream-traces/events.jsonl"]);
+
+        using (var environment = JsonDocument.Parse(retained["environment.json"]))
+        {
+            var tracing = environment.RootElement.GetProperty("streamTracing");
+            Assert.False(tracing.GetProperty("enabled").GetBoolean());
+            Assert.True(tracing.GetProperty("retained").GetBoolean());
+            Assert.True(tracing.GetProperty("retainedUntilUnixMs").GetInt64() > 0);
+            Assert.True(tracing.GetProperty("eventCount").GetInt64() > 0);
+        }
+
+        buffer.Discard();
+        var discarded = await ReadPackEntriesAsync(
+            new LogBufferSink(10),
+            new WarningLogBuffer(new LogBufferSink(50)),
+            buffer);
+
+        using var discardedManifest = JsonDocument.Parse(discarded["manifest.json"]);
+        Assert.Equal(
+            "disabled",
+            discardedManifest.RootElement.GetProperty("sections").GetProperty("streamTraces").GetString());
+        Assert.False(discarded.ContainsKey("stream-traces/sessions.json"));
+        Assert.False(discarded.ContainsKey("stream-traces/events.jsonl"));
     }
 
     private static Task<Dictionary<string, string>> ReadPackEntriesAsync(

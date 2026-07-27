@@ -53,6 +53,11 @@ public class ArrMonitoringService : BackgroundService
 
     private async Task HandleStuckQueueItems(ArrConfig arrConfig, ArrClient client, CancellationToken ct)
     {
+        // A season pack yields one record per episode, so a single stuck release can be
+        // hundreds of removals. Logging each at Warning evicted every other warning from
+        // the buffer support packs are built from, so detail goes to Debug and the pass
+        // reports one Warning per release and action.
+        var resolutions = new List<(string? Title, ArrConfig.QueueAction Action)>();
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -63,7 +68,12 @@ public class ArrMonitoringService : BackgroundService
             var actionableStatuses = arrConfig.QueueRules.Select(x => x.Message);
             var stuckRecords = queue.Records.Where(x => actionableStatuses.Any(x.HasStatusMessage));
             foreach (var record in stuckRecords)
-                await HandleStuckQueueItem(record, arrConfig, client, timeout.Token).ConfigureAwait(false);
+            {
+                var action = await HandleStuckQueueItem(record, arrConfig, client, timeout.Token)
+                    .ConfigureAwait(false);
+                if (action is null) continue;
+                resolutions.Add((record.Title, action.Value));
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception e) when (e is HttpRequestException { InnerException: System.Net.Sockets.SocketException })
@@ -74,9 +84,16 @@ public class ArrMonitoringService : BackgroundService
         {
             Log.Error(e, "Error occurred while monitoring queue for {Host}", client.Host);
         }
+        finally
+        {
+            // Preserve the summary even if a later record fails and aborts the pass:
+            // earlier successful removals must not disappear from the Warning lane.
+            LogResolutionSummary(resolutions, client.Host);
+        }
     }
 
-    private async Task HandleStuckQueueItem(ArrQueueRecord item, ArrConfig arrConfig, ArrClient client, CancellationToken ct)
+    private async Task<ArrConfig.QueueAction?> HandleStuckQueueItem(
+        ArrQueueRecord item, ArrConfig arrConfig, ArrClient client, CancellationToken ct)
     {
         // since there may be multiple status messages, multiple actions may apply.
         // in such case, always perform the strongest action.
@@ -86,12 +103,33 @@ public class ArrMonitoringService : BackgroundService
             .DefaultIfEmpty(ArrConfig.QueueAction.DoNothing)
             .Max();
 
-        if (action is ArrConfig.QueueAction.DoNothing) return;
+        if (action is ArrConfig.QueueAction.DoNothing) return null;
         await client.DeleteQueueRecord(item.Id, action).ConfigureAwait(false);
-        Log.Warning(
-            "Resolved stuck queue item {QueueItemTitle} from {Host} with action {Action}",
-            item.Title,
-            client.Host,
-            action);
+        Log.Debug(
+            "Resolved stuck queue record {QueueRecordId} ({QueueItemTitle}) from {Host} with action {Action}",
+            item.Id, item.Title, client.Host, action);
+        return action;
+    }
+
+    internal static IReadOnlyList<((string Title, ArrConfig.QueueAction Action) Key, int Count)>
+        GroupResolutions(IEnumerable<(string? Title, ArrConfig.QueueAction Action)> resolutions) =>
+        resolutions
+            .GroupBy(x => (x.Title ?? "(untitled)", x.Action))
+            .Select(g => (g.Key, g.Count()))
+            .ToList();
+
+    internal static void LogResolutionSummary(
+        IEnumerable<(string? Title, ArrConfig.QueueAction Action)> resolutions,
+        string host)
+    {
+        foreach (var entry in GroupResolutions(resolutions))
+        {
+            Log.Warning(
+                "Resolved {Count} stuck queue item(s) for {QueueItemTitle} from {Host} with action {Action}",
+                entry.Count,
+                entry.Key.Title,
+                host,
+                entry.Key.Action);
+        }
     }
 }
