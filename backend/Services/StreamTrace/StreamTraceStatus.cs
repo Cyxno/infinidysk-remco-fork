@@ -10,4 +10,6 @@ public sealed record StreamTraceStatus(
     long ExpiresAtUnixMs,
     int Capacity,
     long EventCount,
-    int SessionCount);
+    int SessionCount,
+    bool Retained,
+    long RetainedUntilUnixMs);

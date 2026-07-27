@@ -37,8 +37,10 @@ public sealed class StreamTraceStatusBroadcaster(WebsocketManager websocketManag
         JsonSerializer.Serialize(new
         {
             enabled = status.Enabled,
+            retained = status.Retained,
             source = status.Source,
             expiresAtUnixMs = status.ExpiresAtUnixMs,
+            retainedUntilUnixMs = status.RetainedUntilUnixMs,
             capacity = status.Capacity,
             eventCount = status.EventCount,
             sessionCount = status.SessionCount,

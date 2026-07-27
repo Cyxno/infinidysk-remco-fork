@@ -16,23 +16,34 @@ public sealed class SetStreamTracingController(
         StreamTraceStatus status;
         if (request.Enabled)
         {
+            var before = buffer.GetStatus();
             status = buffer.EnableFor(
                 TimeSpan.FromMinutes(request.Minutes),
                 StreamTraceBuffer.DefaultUiCapacity,
                 StreamTraceBuffer.SourceUi);
             // Recorded so a support pack shows when tracing started and for how
             // long — the env-var path logs an equivalent line at startup.
-            Log.Information(
-                "Stream tracing enabled from the UI for {Minutes} minutes with a capacity of {Capacity} events",
-                request.Minutes,
-                status.Capacity);
+            if (before.Retained)
+            {
+                Log.Information(
+                    "Stream tracing resumed from the UI for {Minutes} minutes with a capacity of {Capacity} events",
+                    request.Minutes,
+                    status.Capacity);
+            }
+            else
+            {
+                Log.Information(
+                    "Stream tracing enabled from the UI for {Minutes} minutes with a capacity of {Capacity} events",
+                    request.Minutes,
+                    status.Capacity);
+            }
         }
         else
         {
             var before = buffer.GetStatus();
-            status = buffer.Disable();
+            status = buffer.StopRecording();
             Log.Information(
-                "Stream tracing disabled from the UI; released {Events:n0} buffered events",
+                "Stream tracing stopped from the UI; retaining {Events:n0} events for support packs",
                 before.EventCount);
         }
 

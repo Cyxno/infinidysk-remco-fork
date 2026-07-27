@@ -148,10 +148,11 @@ public sealed class SupportPackService(
         collection counts) over pauseTimePercentage, which reflects only the most
         recent collection.
 
-        stream-traces/ is included only while developer stream tracing is enabled
-        (Settings → Support, or STREAM_TRACE_EVENTS). Tracing is opt-in, memory-only,
-        and resets on restart. RangeEnd events carry stall attribution for the range
-        that just finished: connWaitMs (waiting for an NNTP connection),
+        stream-traces/ is included while developer stream tracing is enabled or while
+        a stopped capture is retained for one hour (Settings → Support, or
+        STREAM_TRACE_EVENTS). Tracing is opt-in, memory-only, and resets on restart.
+        RangeEnd events carry stall attribution for the range that just finished:
+        connWaitMs (waiting for an NNTP connection),
         providerWaitMs (waiting for provider response headers), bodyDrainMs (reading
         article bodies), consumerWaitMs (playback starved waiting for prefetch), and
         clientWriteMs (blocked writing to the player). They overlap, because segments
@@ -242,8 +243,10 @@ public sealed class SupportPackService(
             streamTracing = new
             {
                 enabled = streamTracing.Enabled,
+                retained = streamTracing.Retained,
                 source = streamTracing.Source,
                 expiresAtUnixMs = streamTracing.ExpiresAtUnixMs,
+                retainedUntilUnixMs = streamTracing.RetainedUntilUnixMs,
                 capacity = streamTracing.Capacity,
                 eventCount = streamTracing.EventCount,
                 sessionCount = streamTracing.SessionCount,

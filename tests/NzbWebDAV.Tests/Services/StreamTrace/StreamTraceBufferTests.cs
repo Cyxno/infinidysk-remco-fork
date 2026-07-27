@@ -231,25 +231,132 @@ public class StreamTraceBufferTests
     }
 
     [Fact]
-    public void EnableFor_UiSource_CapturesEventsUntilDisabled()
+    public void StopRecording_RetainsTheCaptureAndStopsAcceptingEvents()
     {
         var buffer = new StreamTraceBuffer(100, enabled: false);
-        Assert.False(buffer.Enabled);
-
-        var status = buffer.EnableFor(TimeSpan.FromMinutes(15), 5_000, StreamTraceBuffer.SourceUi);
-        Assert.True(status.Enabled);
-        Assert.Equal(StreamTraceBuffer.SourceUi, status.Source);
-        Assert.True(status.ExpiresAtUnixMs > 0);
-        Assert.Equal(5_000, status.Capacity);
-
         var session = Guid.NewGuid();
+        buffer.EnableFor(TimeSpan.FromMinutes(15), 5_000, StreamTraceBuffer.SourceUi);
         buffer.RangeOpen(session, "/view/a.mkv", "GET", 0, 1, 10, null, null);
-        Assert.Single(buffer.GetSessionEvents(session));
 
-        buffer.Disable();
-        Assert.False(buffer.Enabled);
+        var status = buffer.StopRecording();
+        buffer.Seek(session, 5);
+
+        Assert.False(status.Enabled);
+        Assert.True(status.Retained);
+        Assert.True(buffer.HasRetainedEvents);
+        Assert.True(status.RetainedUntilUnixMs > 0);
+        Assert.Equal(0, status.ExpiresAtUnixMs);
+        Assert.Single(buffer.GetSessionEvents(session));
+        Assert.Single(buffer.ListSessions());
+        Assert.NotEmpty(buffer.FormatEventsJsonl(100));
+    }
+
+    [Fact]
+    public void Discard_ReleasesTheRetainedCapture()
+    {
+        var buffer = new StreamTraceBuffer(100);
+        var session = Guid.NewGuid();
+        buffer.Seek(session, 5);
+        buffer.StopRecording();
+
+        var status = buffer.Discard();
+
+        Assert.False(status.Enabled);
+        Assert.False(status.Retained);
+        Assert.False(buffer.HasRetainedEvents);
+        Assert.Equal(0, status.RetainedUntilUnixMs);
+        Assert.Equal(0, status.EventCount);
         Assert.Empty(buffer.ListSessions());
         Assert.Empty(buffer.GetSessionEvents(session));
+    }
+
+    [Fact]
+    public void StopRecording_WithNoEvents_ReleasesTheEmptyRing()
+    {
+        var buffer = new StreamTraceBuffer(100, enabled: false);
+        buffer.EnableFor(
+            TimeSpan.FromMinutes(15),
+            StreamTraceBuffer.DefaultUiCapacity,
+            StreamTraceBuffer.SourceUi);
+
+        var first = buffer.StopRecording();
+        var second = buffer.StopRecording();
+
+        Assert.False(first.Enabled);
+        Assert.False(first.Retained);
+        Assert.False(buffer.HasRetainedEvents);
+        Assert.Equal(0, first.RetainedUntilUnixMs);
+        Assert.Equal(0, first.EventCount);
+        Assert.Equal(0, first.SessionCount);
+        Assert.Equal(first, second);
+        Assert.Empty(buffer.GetRecentEvents(100));
+    }
+
+    [Fact]
+    public void StopRecording_IsIdempotentAndDoesNotExtendRetention()
+    {
+        var buffer = new StreamTraceBuffer(100);
+        buffer.Seek(Guid.NewGuid(), 5);
+
+        var first = buffer.StopRecording();
+        Thread.Sleep(5);
+        var second = buffer.StopRecording();
+
+        Assert.True(first.Retained);
+        Assert.True(second.Retained);
+        Assert.Equal(first.RetainedUntilUnixMs, second.RetainedUntilUnixMs);
+        Assert.Equal(first.EventCount, second.EventCount);
+    }
+
+    [Fact]
+    public void EnableFor_ResumesRetainedCapture()
+    {
+        var buffer = new StreamTraceBuffer(100, enabled: false);
+        var session = Guid.NewGuid();
+        buffer.EnableFor(TimeSpan.FromMinutes(15), 5_000, StreamTraceBuffer.SourceUi);
+        buffer.Seek(session, 5);
+        var stopped = buffer.StopRecording();
+
+        var resumed = buffer.EnableFor(
+            TimeSpan.FromMinutes(30),
+            StreamTraceBuffer.DefaultUiCapacity,
+            StreamTraceBuffer.SourceUi);
+        buffer.Seek(session, 6);
+
+        Assert.True(stopped.Retained);
+        Assert.True(resumed.Enabled);
+        Assert.False(resumed.Retained);
+        Assert.False(buffer.HasRetainedEvents);
+        Assert.Equal(0, resumed.RetainedUntilUnixMs);
+        Assert.Equal(5_000, resumed.Capacity);
+        var events = buffer.GetSessionEvents(session);
+        Assert.Equal(2, events.Count);
+        Assert.Equal([1L, 2L], events.Select(entry => entry.Sequence));
+        Assert.Equal(2, buffer.ListSessions().Single().EventCount);
+        Assert.Equal(2, buffer.FormatEventsJsonl(100).Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+
+        buffer.Discard();
+        var fresh = buffer.EnableFor(TimeSpan.FromMinutes(15), 100, StreamTraceBuffer.SourceUi);
+        Assert.Equal(0, fresh.EventCount);
+        Assert.Equal(0, fresh.SessionCount);
+        Assert.Empty(buffer.GetSessionEvents(session));
+    }
+
+    [Fact]
+    public void ExpireRetentionForTests_SetsExpiryUntilDiscard()
+    {
+        var buffer = new StreamTraceBuffer(100);
+        buffer.Seek(Guid.NewGuid(), 5);
+        buffer.StopRecording();
+
+        buffer.ExpireRetentionForTests();
+
+        Assert.True(buffer.IsRetentionExpired);
+        Assert.True(buffer.GetStatus().Retained);
+
+        var discarded = buffer.Discard();
+        Assert.False(buffer.IsRetentionExpired);
+        Assert.False(discarded.Retained);
     }
 
     [Fact]
@@ -277,7 +384,7 @@ public class StreamTraceBufferTests
         Assert.True(buffer.IsExpired);
         Assert.False(buffer.Enabled);
 
-        buffer.Disable();
+        buffer.StopRecording();
         Assert.False(buffer.IsExpired);
         Assert.False(buffer.Enabled);
     }

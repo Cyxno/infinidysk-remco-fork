@@ -19,8 +19,10 @@ public class GetStreamTracesController(StreamTraceBuffer buffer) : BaseApiContro
         {
             Status = true,
             Enabled = status.Enabled,
+            Retained = status.Retained,
             Source = status.Source,
             ExpiresAtUnixMs = status.ExpiresAtUnixMs,
+            RetainedUntilUnixMs = status.RetainedUntilUnixMs,
             Capacity = status.Capacity,
             EventCount = status.EventCount,
             SessionCount = status.SessionCount,
