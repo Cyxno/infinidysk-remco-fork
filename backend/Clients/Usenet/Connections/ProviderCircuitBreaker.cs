@@ -128,13 +128,28 @@ public class ProviderCircuitBreaker
     }
 
     /// <summary>
-    /// Article permanently missing from retention. Counts as a miss for diagnostics
-    /// but does not contribute to provider-failure tripping.
+    /// Article permanently missing from retention. A 430 is a clean server response and
+    /// says nothing about provider health, so it counts as a miss for diagnostics and
+    /// nothing else: it must not undo a trip, reset the cooldown ladder, satisfy the
+    /// half-open probe, or emit a Closed transition. On a closed circuit it does clear the
+    /// failure sampling window, because the provider demonstrably answered.
+    /// <para>
+    /// A miss recorded during a half-open probe leaves the probe slot claimed. It is not
+    /// evidence of recovery, so the slot is released by <see cref="ProbeAbandonTimeout"/>
+    /// rather than here.
+    /// </para>
     /// </summary>
     public void RecordArticleNotFound()
     {
         Interlocked.Increment(ref _articleMissCount);
-        RecordSuccess();
+
+        lock (_lock)
+        {
+            if (_trippedUntilMs != 0 || Volatile.Read(ref _halfOpenProbeInFlight) != 0)
+                return;
+
+            _window.Clear();
+        }
     }
 
     /// <summary>Read-only snapshot for dashboards. Does not claim a half-open probe.</summary>
