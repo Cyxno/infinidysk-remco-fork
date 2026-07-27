@@ -710,7 +710,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         }
 
         return SegmentDownloadResult.ZeroFill(
-            new MemoryStream(new byte[fill], writable: false),
+            new ZeroStream(fill),
             messageTemplate,
             segmentId,
             fill,
@@ -738,6 +738,8 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
     {
         ArticleByteLease? lease = existingLease;
         var ownsLease = existingLease is null;
+        PooledBufferStream? buffer = null;
+        var sourceDisposeAttempted = false;
         try
         {
             var hasExactSize = _segmentSizes.TryGetExactSize(segmentIndex, out var exactSize);
@@ -750,7 +752,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                 lease = await LeaseSegmentBytesAsync(estimate, cancellationToken).ConfigureAwait(false);
 
             var capacity = estimate is > 0 and <= int.MaxValue ? (int)estimate : 0;
-            var buffer = new MemoryStream(capacity);
+            buffer = new PooledBufferStream(capacity);
             var drainStarted = Stopwatch.GetTimestamp();
             await source.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
             StreamTrace.TryStall(
@@ -768,20 +770,31 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                 lease.Adjust(actual - estimate);
 
             buffer.Position = 0;
-            ownsLease = false;
-            return ReferenceEquals(lease, ArticleByteLease.Empty)
-                ? buffer
+            // Keep the buffer and any internally acquired lease locally owned until
+            // source disposal succeeds. A disposal failure must not strand either.
+            sourceDisposeAttempted = true;
+            await source.DisposeAsync().ConfigureAwait(false);
+            // Build the wrapper that takes over the buffer and lease before dropping
+            // local ownership, so a failure here still routes both through the catch.
+            var result = ReferenceEquals(lease, ArticleByteLease.Empty)
+                ? (Stream)buffer
                 : new BudgetedStream(buffer, lease);
+            ownsLease = false;
+            buffer = null;
+            return result;
         }
         catch
         {
+            if (buffer is not null)
+                await buffer.DisposeAsync().ConfigureAwait(false);
             if (ownsLease)
                 lease?.Dispose();
             throw;
         }
         finally
         {
-            await source.DisposeAsync().ConfigureAwait(false);
+            if (!sourceDisposeAttempted)
+                await source.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -799,7 +812,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
     /// shortfall or an overrun would shift every following byte, so short bodies are
     /// padded and long bodies are truncated to the recorded size.
     /// </summary>
-    private void AlignDrainedSegment(MemoryStream buffer, int segmentIndex, long drained, long expected)
+    private void AlignDrainedSegment(PooledBufferStream buffer, int segmentIndex, long drained, long expected)
     {
         if (drained == expected) return;
 
