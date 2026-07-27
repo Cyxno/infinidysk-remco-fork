@@ -10,6 +10,7 @@ using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models.Metrics;
 using NzbWebDAV.Logging;
 using NzbWebDAV.Services.Metrics;
+using NzbWebDAV.Services.StreamTrace;
 using NzbWebDAV.Streams;
 using Serilog;
 
@@ -23,7 +24,8 @@ public sealed class SupportPackService(
     ProviderBytesTracker bytesTracker,
     UsenetStreamingClient usenetStreamingClient,
     ArticleMissNegativeCache articleMissCache,
-    InFlightArticleBudget inFlightArticleBudget)
+    InFlightArticleBudget inFlightArticleBudget,
+    StreamTraceBuffer streamTraceBuffer)
 {
     private const long MinuteMs = 60_000;
     private const long HourMs = 60 * MinuteMs;
@@ -56,7 +58,9 @@ public sealed class SupportPackService(
         await WriteTextAsync(
             archive,
             "logs/warnings.log",
-            redactor.RedactText(FormatLogs(warningSnapshot.Entries)),
+            warningSnapshot.Entries.Count == 0
+                ? "No warnings or errors were logged since this backend started.\n"
+                : redactor.RedactText(FormatLogs(warningSnapshot.Entries)),
             cancellationToken).ConfigureAwait(false);
         await WriteJsonAsync(
             archive,
@@ -83,6 +87,27 @@ public sealed class SupportPackService(
             sectionStatus["metrics"] = "unavailable";
         }
 
+        var traceStatus = streamTraceBuffer.GetStatus();
+        if (traceStatus.Enabled || traceStatus.EventCount > 0)
+        {
+            await WriteJsonAsync(
+                archive,
+                "stream-traces/sessions.json",
+                streamTraceBuffer.ListSessions(50),
+                redactor,
+                cancellationToken).ConfigureAwait(false);
+            await WriteTextAsync(
+                archive,
+                "stream-traces/events.jsonl",
+                redactor.RedactText(streamTraceBuffer.FormatEventsJsonl(StreamTraceBuffer.UiMaxCapacity)),
+                cancellationToken).ConfigureAwait(false);
+            sectionStatus["streamTraces"] = "included";
+        }
+        else
+        {
+            sectionStatus["streamTraces"] = "disabled";
+        }
+
         await WriteJsonAsync(
             archive,
             "manifest.json",
@@ -107,10 +132,14 @@ public sealed class SupportPackService(
         the last 500 warnings and errors separately for that reason - check it first
         when the main log looks like it only contains routine activity.
 
+        stream-traces/ is included only while developer stream tracing is enabled
+        (Settings → Support, or STREAM_TRACE_EVENTS). Tracing is opt-in, memory-only,
+        and resets on restart.
+
         The archive deliberately excludes database files, backups, blobs/NZBs,
-        environment files, session/API key files, crash dumps, stream traces, and
-        segment-cache data. Credentials, API keys, tokens, URL credentials and
-        sensitive URL query values are redacted. IP addresses are pseudonymized.
+        environment files, session/API key files, crash dumps, and segment-cache
+        data. Credentials, API keys, tokens, URL credentials and sensitive URL query
+        values are redacted. IP addresses are pseudonymized.
 
         File names, filesystem paths, account usernames, DNS hostnames, and
         non-secret URL paths can remain for troubleshooting. Share this archive only
@@ -139,6 +168,7 @@ public sealed class SupportPackService(
         var root = Path.GetPathRoot(Path.GetFullPath(configPath)) ?? configPath;
         var drive = new DriveInfo(root);
         var uptime = ProcessUptime();
+        var streamTracing = streamTraceBuffer.GetStatus();
 
         return new
         {
@@ -168,6 +198,15 @@ public sealed class SupportPackService(
                 configDatabaseBytes = FileSize(DavDatabaseContext.DatabaseFilePath),
                 metricsDatabaseBytes = FileSize(MetricsDbContext.DatabaseFilePath),
                 availableFreeSpaceBytes = drive.IsReady ? drive.AvailableFreeSpace : (long?)null,
+            },
+            streamTracing = new
+            {
+                enabled = streamTracing.Enabled,
+                source = streamTracing.Source,
+                expiresAtUnixMs = streamTracing.ExpiresAtUnixMs,
+                capacity = streamTracing.Capacity,
+                eventCount = streamTracing.EventCount,
+                sessionCount = streamTracing.SessionCount,
             },
             environment = new Dictionary<string, string?>(StringComparer.Ordinal)
             {
