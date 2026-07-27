@@ -159,6 +159,21 @@ public sealed class SupportPackService(
         are fetched concurrently, so read them as shares of the range rather than a
         breakdown that sums to its duration.
 
+        Each RangeEnd also reports fetches, the number of segment fetches attributed to
+        that range. providerWaitMs is an aggregate across concurrent fetches, so it can
+        exceed wall clock; compare providerWaitMs / fetches (average provider wait) and
+        providerWaitMs / elapsed RangeOpen-to-RangeEnd time (implied concurrency) with
+        the configured pool size. Attribution is by the range that started each fetch,
+        including fetches that finish after an aborted RangeEnd, so late work is not
+        billed to the next range. Pair RangeOpen and RangeEnd by rangeGeneration when
+        requests overlap or finish out of order.
+
+        Trace connWaitMs and the connection pool's GateWaitMs are not comparable. Trace
+        stalls are scoped to read sessions captured while tracing was active; pool churn
+        counters are process-wide and cumulative, so they also include queue imports and
+        health sweeps. On a scan-heavy install the two legitimately differ by orders of
+        magnitude.
+
         The archive deliberately excludes database files, backups, blobs/NZBs,
         environment files, session/API key files, crash dumps, and segment-cache
         data. Credentials, API keys, tokens, URL credentials and sensitive URL query
