@@ -1,11 +1,12 @@
 using Microsoft.AspNetCore.Mvc;
 using NzbWebDAV.Clients.Rclone;
+using NzbWebDAV.Config;
 
 namespace NzbWebDAV.Api.Controllers.TestRcloneConnection;
 
 [ApiController]
 [Route("api/test-rclone-connection")]
-public class TestRcloneConnectionController() : BaseApiController
+public class TestRcloneConnectionController(ConfigManager configManager) : BaseApiController
 {
     private static async Task<TestRcloneConnectionResponse> TestRcloneConnection(TestRcloneConnectionRequest request)
     {
@@ -35,7 +36,7 @@ public class TestRcloneConnectionController() : BaseApiController
 
     protected override async Task<IActionResult> HandleRequest()
     {
-        var request = new TestRcloneConnectionRequest(HttpContext);
+        var request = new TestRcloneConnectionRequest(HttpContext, configManager);
         var response = await TestRcloneConnection(request).ConfigureAwait(false);
         return Ok(response);
     }
