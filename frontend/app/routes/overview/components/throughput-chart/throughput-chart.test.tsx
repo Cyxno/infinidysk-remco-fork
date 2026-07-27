@@ -44,14 +44,18 @@ describe("ThroughputChart", () => {
         expect(markup).toContain('data-series="articles"');
     });
 
-    it("skips zero article buckets so idle stretches do not draw a baseline", () => {
-        const markup = render([point(0), point(5), point(0), point(3), point(0)]);
+    it("skips idle stretches but anchors each run to leading and trailing zeros", () => {
+        const markup = render([point(0), point(5), point(0), point(0), point(3), point(0)]);
         const d = articlesPathD(markup);
 
         expect(d).not.toBe("");
-        // Two non-zero spikes → two move commands (path breaks at zeros).
+        // Two non-zero spikes → two move commands (path breaks across idle zeros).
         expect((d.match(/M/g) ?? []).length).toBe(2);
-        // Baseline y for this chart is 156.0 (VB_H - BOT_PAD); sparse path must not visit it.
-        expect(d).not.toContain(",156.0");
+        // Baseline y for this chart is 156.0 (VB_H - BOT_PAD); each run includes adjacent zeros.
+        expect(d).toContain(",156.0");
+        // First run: zero → 5 → zero. Peak y for articles=5 with scaleMax=5 is TOP_PAD (6.0).
+        expect(d.startsWith("M0.0,156.0")).toBe(true);
+        expect(d).toContain("L160.0,6.0");
+        expect(d).toContain("L320.0,156.0");
     });
 });

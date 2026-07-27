@@ -53,7 +53,7 @@ export function ThroughputChart({
         const yPct = (v: number) => 100 - ((v / scaleMax) * (1 - (TOP_PAD + BOT_PAD) / VB_H) * 100 + (BOT_PAD / VB_H) * 100);
 
         return {
-            articlesPath: buildSparseSeriesPath(points, p => p.articles, xStep, y),
+            articlesPath: buildArticlesSeriesPath(points, xStep, y),
             errorsPath: buildSparseSeriesPath(points, p => p.errors, xStep, y),
             maxArticles: peakArticles,
             maxNetworkRate: maxRate,
@@ -229,7 +229,45 @@ export function ThroughputChart({
     );
 }
 
-/** Sparse series path: skip y=0 so idle buckets do not draw a baseline stroke. */
+/**
+ * Articles path: draw each positive run, including one leading and one trailing
+ * zero when present, so segments rise from / fall to the baseline. Idle stretches
+ * between runs stay undrawn (no continuous zero baseline).
+ */
+function buildArticlesSeriesPath(
+    points: ThroughputPoint[],
+    xStep: number,
+    y: (v: number) => number,
+): string {
+    const parts: string[] = [];
+    let i = 0;
+    while (i < points.length) {
+        if (points[i].articles <= 0) {
+            i++;
+            continue;
+        }
+        const runStart = i;
+        while (i < points.length && points[i].articles > 0) i++;
+        const runEnd = i - 1;
+        const from = runStart > 0 ? runStart - 1 : runStart;
+        const to = runEnd < points.length - 1 ? runEnd + 1 : runEnd;
+
+        for (let j = from; j <= to; j++) {
+            const x = (j * xStep).toFixed(1);
+            const yy = y(points[j].articles).toFixed(1);
+            parts.push(`${j === from ? "M" : "L"}${x},${yy}`);
+        }
+        // Edge-of-window isolated spike with no adjacent zero needs a tiny stroke.
+        if (from === to) {
+            const x2 = (from * xStep + Math.max(xStep * 0.15, 1)).toFixed(1);
+            const yy = y(points[from].articles).toFixed(1);
+            parts.push(`L${x2},${yy}`);
+        }
+    }
+    return parts.join(" ");
+}
+
+/** Sparse errors path: skip y=0 so red does not cover the green baseline. */
 function buildSparseSeriesPath(
     points: ThroughputPoint[],
     getValue: (p: ThroughputPoint) => number,
