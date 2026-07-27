@@ -1,52 +1,35 @@
-import { Link } from "react-router";
 import { ConfirmModal } from "~/components/confirm-modal/confirm-modal";
-import { settingsPath } from "~/routes/settings/settings-tabs";
 
-export type DisableTracingConfirmModalProps = {
+export type DiscardTracesConfirmModalProps = {
     show: boolean;
     eventCount: number;
     sessionCount: number;
-    includeSettingsLink?: boolean;
     onCancel: () => void;
     onConfirm: () => void;
 };
 
-export function DisableTracingConfirmModal({
+export function DiscardTracesConfirmModal({
     show,
     eventCount,
     sessionCount,
-    includeSettingsLink = false,
     onCancel,
     onConfirm,
-}: DisableTracingConfirmModalProps) {
+}: DiscardTracesConfirmModalProps) {
     const counts = `${eventCount.toLocaleString()} events across ${sessionCount.toLocaleString()} sessions`;
 
     return (
         <ConfirmModal
             show={show}
-            title="Turn off stream tracing?"
+            title="Discard captured traces?"
             message={
                 <>
-                    Tracing is holding {counts} in memory. Turning it off releases the buffer
-                    immediately, and those traces cannot be recovered. Generate a support pack
-                    first if you want them included.
-                    {includeSettingsLink && (
-                        <>
-                            {" "}
-                            <Link
-                                to={settingsPath("support")}
-                                className="link link-primary"
-                                onClick={onCancel}
-                            >
-                                Open Support settings
-                            </Link>
-                            {" "}to generate a pack.
-                        </>
-                    )}
+                    {counts} are held in memory for a support pack. Discarding frees that memory
+                    now and the traces cannot be recovered. Generate a support pack first if you
+                    have not already.
                 </>
             }
-            cancelText="Keep tracing on"
-            confirmText="Turn off and discard"
+            cancelText="Keep traces"
+            confirmText="Discard traces"
             onCancel={onCancel}
             onConfirm={onConfirm}
         />

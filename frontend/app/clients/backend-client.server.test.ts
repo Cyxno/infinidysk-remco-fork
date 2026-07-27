@@ -253,4 +253,68 @@ describe("BackendClient", () => {
       message: "Failed to fetch onboarding status: backend is starting or migrating",
     });
   });
+
+  it("maps stream tracing status fields and defaults retained values", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      enabled: true,
+      source: "ui",
+      expiresAtUnixMs: 123,
+      capacity: 20000,
+      eventCount: 4,
+      sessionCount: 1,
+    }));
+
+    await expect(backendClient.getStreamTracingStatus()).resolves.toEqual({
+      enabled: true,
+      source: "ui",
+      expiresAtUnixMs: 123,
+      capacity: 20000,
+      eventCount: 4,
+      sessionCount: 1,
+      retained: false,
+      retainedUntilUnixMs: 0,
+    });
+  });
+
+  it("posts discard-stream-traces and maps the clean status", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      enabled: false,
+      source: "ui",
+      expiresAtUnixMs: 0,
+      capacity: 20000,
+      eventCount: 0,
+      sessionCount: 0,
+      retained: false,
+      retainedUntilUnixMs: 0,
+    }));
+
+    await expect(backendClient.discardStreamTraces()).resolves.toMatchObject({
+      retained: false,
+      eventCount: 0,
+    });
+    expect(fetchMock).toHaveBeenCalledWith("http://backend/api/discard-stream-traces", {
+      method: "POST",
+      headers: { "x-api-key": "test-api-key" },
+    });
+  });
+
+  it("maps a retained response after disabling stream tracing", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      enabled: false,
+      source: "ui",
+      expiresAtUnixMs: 0,
+      capacity: 20000,
+      eventCount: 12,
+      sessionCount: 2,
+      retained: true,
+      retainedUntilUnixMs: 999,
+    }));
+
+    await expect(backendClient.setStreamTracing(false)).resolves.toMatchObject({
+      enabled: false,
+      retained: true,
+      retainedUntilUnixMs: 999,
+      eventCount: 12,
+    });
+  });
 });

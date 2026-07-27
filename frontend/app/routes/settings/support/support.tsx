@@ -12,9 +12,12 @@ import {
     Spinner,
     Toggle,
 } from "~/components/ui";
+import { DiscardTracesConfirmModal } from "~/components/stream-tracing-confirm";
 import { useWebsocketTopic } from "~/utils/shared-websocket";
-import type { StreamTracingStatus } from "~/components/stream-tracing-banner";
-import { DisableTracingConfirmModal } from "~/components/stream-tracing-confirm";
+import {
+    toStreamTracingStatus,
+    type StreamTracingStatus,
+} from "~/utils/stream-tracing-status";
 
 type Message = { text: string; variant: "success" | "danger" } | null;
 
@@ -42,15 +45,15 @@ export function SupportSettings() {
     const [minutes, setMinutes] = useState<number>(30);
     const [status, setStatus] = useState<StreamTracingStatus | null>(null);
     const [now, setNow] = useState(() => Date.now());
-    const [confirmDisable, setConfirmDisable] = useState(false);
+    const [confirmDiscard, setConfirmDiscard] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
         void fetch("/settings/stream-tracing")
             .then(async (response) => {
                 if (!response.ok) return;
-                const next = await response.json() as StreamTracingStatus;
-                if (!cancelled) setStatus(next);
+                const next = await response.json() as Record<string, unknown>;
+                if (!cancelled) setStatus(toStreamTracingStatus(next));
             })
             .catch(() => { /* banner / websocket will catch up */ });
         return () => { cancelled = true; };
@@ -58,17 +61,17 @@ export function SupportSettings() {
 
     useWebsocketTopic("strt", "state", (messageText) => {
         try {
-            setStatus(JSON.parse(messageText) as StreamTracingStatus);
+            setStatus(toStreamTracingStatus(JSON.parse(messageText) as Record<string, unknown>));
         } catch {
             // ignore malformed payloads
         }
     });
 
     useEffect(() => {
-        if (!status?.enabled) return;
+        if (!status?.enabled && !status?.retained) return;
         const id = window.setInterval(() => setNow(Date.now()), 60_000);
         return () => window.clearInterval(id);
-    }, [status?.enabled]);
+    }, [status?.enabled, status?.retained]);
 
     const download = useCallback(async () => {
         setBusy(true);
@@ -103,6 +106,7 @@ export function SupportSettings() {
     const setTracing = useCallback(async (enabled: boolean, durationMinutes: number = minutes) => {
         setTracingBusy(true);
         setTracingMessage(null);
+        const wasRetained = Boolean(status?.retained);
         try {
             const form = new FormData();
             form.append("enabled", enabled ? "true" : "false");
@@ -112,14 +116,19 @@ export function SupportSettings() {
                 const body = await response.json().catch(() => null);
                 throw new Error(body?.error || `Could not update stream tracing (${response.status})`);
             }
-            const next = await response.json() as StreamTracingStatus;
+            const next = toStreamTracingStatus(await response.json() as Record<string, unknown>);
             setStatus(next);
-            setTracingMessage({
-                text: enabled
-                    ? `Stream tracing enabled for ${durationMinutes} minutes. Reproduce the issue, then download a support pack.`
-                    : "Stream tracing turned off and the buffer was released.",
-                variant: "success",
-            });
+            let text: string;
+            if (enabled) {
+                text = wasRetained
+                    ? `Stream tracing resumed for ${durationMinutes} minutes. Reproduce the issue, then download a support pack.`
+                    : `Stream tracing enabled for ${durationMinutes} minutes. Reproduce the issue, then download a support pack.`;
+            } else if (next.retained) {
+                text = `Stream tracing stopped. ${next.eventCount.toLocaleString()} events are still held — generate a support pack, resume tracing, or discard them below.`;
+            } else {
+                text = "Stream tracing stopped. No events were captured.";
+            }
+            setTracingMessage({ text, variant: "success" });
         } catch (error) {
             setTracingMessage({
                 text: error instanceof Error ? error.message : "Could not update stream tracing.",
@@ -128,20 +137,43 @@ export function SupportSettings() {
         } finally {
             setTracingBusy(false);
         }
-    }, [minutes]);
+    }, [minutes, status?.retained]);
 
-    const requestDisable = useCallback(() => {
-        if ((status?.eventCount ?? 0) > 0) {
-            setConfirmDisable(true);
-            return;
+    const discardTraces = useCallback(async () => {
+        setTracingBusy(true);
+        setTracingMessage(null);
+        try {
+            const form = new FormData();
+            form.append("intent", "discard");
+            const response = await fetch("/settings/stream-tracing", { method: "POST", body: form });
+            if (!response.ok) {
+                const body = await response.json().catch(() => null);
+                throw new Error(body?.error || `Could not discard stream traces (${response.status})`);
+            }
+            const next = toStreamTracingStatus(await response.json() as Record<string, unknown>);
+            setStatus(next);
+            setTracingMessage({
+                text: "Captured stream traces were discarded.",
+                variant: "success",
+            });
+        } catch (error) {
+            setTracingMessage({
+                text: error instanceof Error ? error.message : "Could not discard stream traces.",
+                variant: "danger",
+            });
+        } finally {
+            setTracingBusy(false);
         }
-        void setTracing(false);
-    }, [status?.eventCount, setTracing]);
+    }, []);
 
     const enabled = Boolean(status?.enabled);
-    const statusLine = enabled && status
-        ? `Tracing active — ${formatRemaining(status.expiresAtUnixMs, now)}, ${status.eventCount.toLocaleString()} events across ${status.sessionCount.toLocaleString()} sessions`
-        : "Tracing is off.";
+    const retained = Boolean(status?.retained && (status?.eventCount ?? 0) > 0);
+    let statusLine = "Tracing is off.";
+    if (enabled && status) {
+        statusLine = `Tracing active — ${formatRemaining(status.expiresAtUnixMs, now)}, ${status.eventCount.toLocaleString()} events across ${status.sessionCount.toLocaleString()} sessions`;
+    } else if (retained && status) {
+        statusLine = `Tracing is off — ${status.eventCount.toLocaleString()} events across ${status.sessionCount.toLocaleString()} sessions retained for a support pack (released automatically in ${formatRemaining(status.retainedUntilUnixMs, now)})`;
+    }
 
     return (
         <SettingsPage>
@@ -167,7 +199,7 @@ export function SupportSettings() {
                     <li>Current backend logs from the in-memory buffer, plus a separate warnings lane</li>
                     <li>Redacted active settings and runtime information</li>
                     <li>Recent provider outage, failover, and consumption metrics</li>
-                    <li>Stream traces, when developer stream tracing is enabled</li>
+                    <li>Stream traces, while developer stream tracing is on or a capture is retained</li>
                 </ul>
                 <p className="text-xs text-base-content/50">
                     It excludes frontend and container logs, databases, backups, NZBs, blobs, environment files,
@@ -194,7 +226,8 @@ export function SupportSettings() {
                     <span>
                         Tracing is memory-only (up to 20,000 events), never written to disk, and resets on
                         restart. Leave it off unless you are collecting a support pack — a warning banner
-                        appears while it is active.
+                        appears while it is active. Turning it off keeps the capture for about an hour so
+                        you can still download a pack.
                     </span>
                 </Alert>
 
@@ -222,7 +255,7 @@ export function SupportSettings() {
                             if (event.target.checked) {
                                 void setTracing(true, minutes);
                             } else {
-                                requestDisable();
+                                void setTracing(false);
                             }
                         }}
                     />
@@ -235,9 +268,21 @@ export function SupportSettings() {
                         <Button
                             variant="outline"
                             disabled={tracingBusy}
-                            onClick={requestDisable}
+                            onClick={() => void setTracing(false)}
                         >
                             Turn off now
+                        </Button>
+                    </div>
+                )}
+
+                {retained && (
+                    <div>
+                        <Button
+                            variant="outline"
+                            disabled={tracingBusy}
+                            onClick={() => setConfirmDiscard(true)}
+                        >
+                            Discard captured traces
                         </Button>
                     </div>
                 )}
@@ -252,14 +297,14 @@ export function SupportSettings() {
                 {tracingMessage && <Alert variant={tracingMessage.variant}>{tracingMessage.text}</Alert>}
             </SettingsCard>
 
-            <DisableTracingConfirmModal
-                show={confirmDisable}
+            <DiscardTracesConfirmModal
+                show={confirmDiscard}
                 eventCount={status?.eventCount ?? 0}
                 sessionCount={status?.sessionCount ?? 0}
-                onCancel={() => setConfirmDisable(false)}
+                onCancel={() => setConfirmDiscard(false)}
                 onConfirm={() => {
-                    setConfirmDisable(false);
-                    void setTracing(false);
+                    setConfirmDiscard(false);
+                    void discardTraces();
                 }}
             />
         </SettingsPage>

@@ -1,16 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { Alert, Button, Icon } from "~/components/ui";
-import { DisableTracingConfirmModal } from "~/components/stream-tracing-confirm";
 import { useWebsocketTopic } from "~/utils/shared-websocket";
-
-export type StreamTracingStatus = {
-    enabled: boolean;
-    source: string;
-    expiresAtUnixMs: number;
-    capacity: number;
-    eventCount: number;
-    sessionCount: number;
-};
+import {
+    toStreamTracingStatus,
+    type StreamTracingStatus,
+} from "~/utils/stream-tracing-status";
 
 const TOPIC = "strt";
 
@@ -31,12 +25,11 @@ export function StreamTracingBanner() {
     const [status, setStatus] = useState<StreamTracingStatus | null>(null);
     const [now, setNow] = useState(() => Date.now());
     const [busy, setBusy] = useState(false);
-    const [confirmDisable, setConfirmDisable] = useState(false);
 
     useWebsocketTopic(TOPIC, "state", (message) => {
         try {
-            const parsed = JSON.parse(message) as StreamTracingStatus;
-            setStatus(parsed);
+            const parsed = JSON.parse(message) as Record<string, unknown>;
+            setStatus(toStreamTracingStatus(parsed));
         } catch {
             // ignore malformed payloads
         }
@@ -55,21 +48,13 @@ export function StreamTracingBanner() {
             form.append("enabled", "false");
             const response = await fetch("/settings/stream-tracing", { method: "POST", body: form });
             if (response.ok) {
-                const next = await response.json() as StreamTracingStatus;
-                setStatus(next);
+                const next = await response.json() as Record<string, unknown>;
+                setStatus(toStreamTracingStatus(next));
             }
         } finally {
             setBusy(false);
         }
     }, []);
-
-    const requestTurnOff = useCallback(() => {
-        if ((status?.eventCount ?? 0) > 0) {
-            setConfirmDisable(true);
-            return;
-        }
-        void turnOff();
-    }, [status?.eventCount, turnOff]);
 
     if (!status?.enabled) return null;
 
@@ -77,32 +62,18 @@ export function StreamTracingBanner() {
     const counts = `${status.eventCount.toLocaleString()} events across ${status.sessionCount.toLocaleString()} sessions`;
 
     return (
-        <>
-            <Alert variant="warning" className="mb-4 items-center justify-between gap-3 text-sm">
-                <div className="flex min-w-0 items-start gap-2">
-                    <Icon name="bug_report" className="mt-0.5 shrink-0 !text-[20px]" />
-                    <span>
-                        Developer stream tracing is on ({remaining}
-                        {status.source === "ui" ? "" : ", from STREAM_TRACE_EVENTS"}). {counts}.
-                        Tracing uses RAM only and resets on restart.
-                    </span>
-                </div>
-                <Button variant="ghost" size="small" disabled={busy} onClick={requestTurnOff}>
-                    Turn off
-                </Button>
-            </Alert>
-
-            <DisableTracingConfirmModal
-                show={confirmDisable}
-                eventCount={status.eventCount}
-                sessionCount={status.sessionCount}
-                includeSettingsLink
-                onCancel={() => setConfirmDisable(false)}
-                onConfirm={() => {
-                    setConfirmDisable(false);
-                    void turnOff();
-                }}
-            />
-        </>
+        <Alert variant="warning" className="mb-4 items-center justify-between gap-3 text-sm">
+            <div className="flex min-w-0 items-start gap-2">
+                <Icon name="bug_report" className="mt-0.5 shrink-0 !text-[20px]" />
+                <span>
+                    Developer stream tracing is on ({remaining}
+                    {status.source === "ui" ? "" : ", from STREAM_TRACE_EVENTS"}). {counts}.
+                    Tracing uses RAM only and resets on restart.
+                </span>
+            </div>
+            <Button variant="ghost" size="small" disabled={busy} onClick={() => void turnOff()}>
+                Turn off
+            </Button>
+        </Alert>
     );
 }
