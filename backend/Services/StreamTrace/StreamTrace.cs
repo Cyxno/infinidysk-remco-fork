@@ -27,10 +27,4 @@ public static class StreamTrace
 
     public static void TryConnectionAcquired(StreamTraceRangeContext? range, TimeSpan wait, bool wasReused)
         => _buffer?.ConnectionAcquired(range, wait, wasReused);
-
-    /// <summary>
-    /// True when a stall measurement is worth taking. Callers in hot loops check this
-    /// before reading timestamps so tracing stays free when it is off.
-    /// </summary>
-    public static bool IsRecording => _buffer?.Enabled == true;
 }

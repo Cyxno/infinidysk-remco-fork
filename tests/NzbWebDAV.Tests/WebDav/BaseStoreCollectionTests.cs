@@ -139,8 +139,10 @@ public sealed class BaseStoreCollectionTests
         }
     }
 
+    // Covers the override shape DatabaseStoreSymlinkCollection uses ("completed-symlinks"),
+    // where sibling release directories are distinct types-per-instance only by UniqueKey.
     [Fact]
-    public async Task CompletedSymlinksScopeKey_CollapsesManyDirectoriesOntoOneWindow()
+    public async Task OverriddenScopeKey_CollapsesManyDirectoriesOntoOneWindow()
     {
         ReadonlyWriteRejectionLog.ResetForTests();
         var sink = new CollectingSink();
