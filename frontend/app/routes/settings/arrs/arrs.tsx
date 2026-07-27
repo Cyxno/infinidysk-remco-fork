@@ -1,10 +1,9 @@
 import { Button } from "~/components/ui/button";
-import { Spinner } from "~/components/ui/feedback";
+import { Alert, Spinner, Tooltip } from "~/components/ui/feedback";
 import { SettingsCard, SettingsIntro, SettingsPage, ManagedSetting } from "~/components/ui";
 import { Input, Select } from "~/components/ui/form";
 import { Icon } from "~/components/ui/icon";
 import { type Dispatch, type SetStateAction, useState, useCallback, useEffect } from "react";
-import { isMaskedSecret } from "~/utils/config-mask";
 
 type ArrsSettingsProps = {
     config: Record<string, string>
@@ -311,17 +310,20 @@ interface InstanceFormProps {
 
 function InstanceForm({ instance, index, type, onUpdate, onRemove }: InstanceFormProps) {
     const [connectionState, setConnectionState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+    const [testError, setTestError] = useState<string | null>(null);
 
     useEffect(() => {
         setConnectionState('idle');
+        setTestError(null);
     }, [instance.Host, instance.ApiKey]);
 
     const testConnection = useCallback(async (host: string, apiKey: string) => {
-        if (!host.trim() || !apiKey.trim() || isMaskedSecret(apiKey)) {
+        if (!host.trim() || !apiKey.trim()) {
             return;
         }
 
         setConnectionState('testing');
+        setTestError(null);
 
         try {
             const formData = new FormData();
@@ -337,11 +339,14 @@ function InstanceForm({ instance, index, type, onUpdate, onRemove }: InstanceFor
 
             if (result.status && result.connected) {
                 setConnectionState('success');
+                setTestError(null);
             } else {
                 setConnectionState('error');
+                setTestError(result.error || "Connection test failed");
             }
         } catch (error) {
             setConnectionState('error');
+            setTestError(error instanceof Error ? error.message : "Connection test failed");
         }
     }, []);
 
@@ -363,28 +368,40 @@ function InstanceForm({ instance, index, type, onUpdate, onRemove }: InstanceFor
                             placeholder={type === "radarr" ? "http://localhost:7878" : "http://localhost:8989"}
                             value={instance.Host}
                             onChange={e => onUpdate(index, 'Host', e.target.value)} />
-                        {instance.Host.trim() && instance.ApiKey.trim() && !isMaskedSecret(instance.ApiKey) && (
-                            <Button
-                                variant={connectionState === 'success' ? 'success' :
-                                    connectionState === 'error' ? 'danger' : 'secondary'}
-                                onClick={() => testConnection(instance.Host, instance.ApiKey)}
-                                disabled={connectionState === 'testing'}
-                                className={'shrink-0'}
-                            >
-                                {
-                                    connectionState === 'testing' ? (
-                                        <Spinner />
-                                    ) : connectionState === 'success' ? (
-                                        <Icon name="check" className="!text-[18px]" />
-                                    ) : connectionState === 'error' ? (
-                                        <Icon name="close" className="!text-[18px]" />
-                                    ) : (
-                                        'Test Conn'
-                                    )
-                                }
-                            </Button>
+                        {instance.Host.trim() && instance.ApiKey.trim() && (
+                            <Tooltip content="Tests host, credentials, and API response">
+                                <Button
+                                    variant={connectionState === 'success' ? 'success' :
+                                        connectionState === 'error' ? 'danger' : 'secondary'}
+                                    onClick={() => testConnection(instance.Host, instance.ApiKey)}
+                                    disabled={connectionState === 'testing'}
+                                    className={'shrink-0'}
+                                >
+                                    {
+                                        connectionState === 'testing' ? (
+                                            <Spinner />
+                                        ) : connectionState === 'success' ? (
+                                            <Icon name="check" className="!text-[18px]" />
+                                        ) : connectionState === 'error' ? (
+                                            <Icon name="close" className="!text-[18px]" />
+                                        ) : (
+                                            'Test Conn'
+                                        )
+                                    }
+                                </Button>
+                            </Tooltip>
                         )}
                     </div>
+                    {connectionState === 'error' && testError && (
+                        <Alert variant="danger" className="text-xs py-2">
+                            {testError}
+                        </Alert>
+                    )}
+                    {connectionState === 'success' && (
+                        <Alert variant="success" className="text-xs py-2">
+                            Connection test successful
+                        </Alert>
+                    )}
                 </div>
                 <div className="space-y-2">
                     <label className="block text-sm font-medium text-base-content">API Key</label>

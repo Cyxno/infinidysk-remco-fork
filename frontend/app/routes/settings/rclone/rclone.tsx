@@ -1,10 +1,9 @@
 import { Button } from "~/components/ui/button";
-import { Spinner, Tooltip } from "~/components/ui/feedback";
+import { Alert, Spinner, Tooltip } from "~/components/ui/feedback";
 import { ManagedSetting, SettingsCard, SettingsIntro, SettingsPage } from "~/components/ui";
 import { Input, Toggle } from "~/components/ui/form";
 import { Icon } from "~/components/ui/icon";
 import { type Dispatch, type SetStateAction, useState, useCallback, useEffect } from "react";
-import { isMaskedSecret } from "~/utils/config-mask";
 
 type RcloneSettingsProps = {
     config: Record<string, string>
@@ -13,18 +12,21 @@ type RcloneSettingsProps = {
 
 export function RcloneSettings({ config, setNewConfig }: RcloneSettingsProps) {
     const [connectionState, setConnectionState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+    const [testError, setTestError] = useState<string | null>(null);
 
     useEffect(() => {
         setConnectionState('idle');
+        setTestError(null);
     }, [config["rclone.host"], config["rclone.user"], config["rclone.pass"]]);
 
     const testConnection = useCallback(async () => {
         const host = config["rclone.host"];
-        if (!host?.trim() || isMaskedSecret(config["rclone.pass"])) {
+        if (!host?.trim()) {
             return;
         }
 
         setConnectionState('testing');
+        setTestError(null);
 
         try {
             const formData = new FormData();
@@ -41,11 +43,14 @@ export function RcloneSettings({ config, setNewConfig }: RcloneSettingsProps) {
 
             if (result.status && result.connected) {
                 setConnectionState('success');
+                setTestError(null);
             } else {
                 setConnectionState('error');
+                setTestError(result.error || "Connection test failed");
             }
         } catch (error) {
             setConnectionState('error');
+            setTestError(error instanceof Error ? error.message : "Connection test failed");
         }
     }, [config]);
 
@@ -92,28 +97,40 @@ export function RcloneSettings({ config, setNewConfig }: RcloneSettingsProps) {
                         placeholder="http://localhost:5572"
                         value={config["rclone.host"]}
                         onChange={e => setNewConfig({ ...config, "rclone.host": e.target.value })} />
-                    {config["rclone.host"]?.trim() && !isMaskedSecret(config["rclone.pass"]) && (
-                        <Button
-                            variant={connectionState === 'success' ? 'success' :
-                                connectionState === 'error' ? 'danger' : 'secondary'}
-                            onClick={testConnection}
-                            disabled={connectionState === 'testing'}
-                            className={'shrink-0'}
-                        >
-                            {
-                                connectionState === 'testing' ? (
-                                    <Spinner />
-                                ) : connectionState === 'success' ? (
-                                    <Icon name="check" className="!text-[18px]" />
-                                ) : connectionState === 'error' ? (
-                                    <Icon name="close" className="!text-[18px]" />
-                                ) : (
-                                    'Test Conn'
-                                )
-                            }
-                        </Button>
+                    {config["rclone.host"]?.trim() && (
+                        <Tooltip content="Tests host, credentials, and API response">
+                            <Button
+                                variant={connectionState === 'success' ? 'success' :
+                                    connectionState === 'error' ? 'danger' : 'secondary'}
+                                onClick={testConnection}
+                                disabled={connectionState === 'testing'}
+                                className={'shrink-0'}
+                            >
+                                {
+                                    connectionState === 'testing' ? (
+                                        <Spinner />
+                                    ) : connectionState === 'success' ? (
+                                        <Icon name="check" className="!text-[18px]" />
+                                    ) : connectionState === 'error' ? (
+                                        <Icon name="close" className="!text-[18px]" />
+                                    ) : (
+                                        'Test Conn'
+                                    )
+                                }
+                            </Button>
+                        </Tooltip>
                     )}
                 </div>
+                {connectionState === 'error' && testError && (
+                    <Alert variant="danger" className="text-xs py-2">
+                        {testError}
+                    </Alert>
+                )}
+                {connectionState === 'success' && (
+                    <Alert variant="success" className="text-xs py-2">
+                        Connection test successful
+                    </Alert>
+                )}
                 <p className="text-[11px] leading-relaxed text-base-content/45" id="rclone-host-help">
                     The host address of the rclone RC API.
                 </p>

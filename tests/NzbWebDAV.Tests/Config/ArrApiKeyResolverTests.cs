@@ -2,12 +2,11 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database.Models;
-using NzbWebDAV.Models;
 
 namespace NzbWebDAV.Tests.Config;
 
 [Collection(nameof(SecretResolverCollection))]
-public class UsenetPassResolverTests
+public class ArrApiKeyResolverTests
 {
     [Fact]
     public void Resolve_ReturnsPlaintextUnchanged()
@@ -15,48 +14,51 @@ public class UsenetPassResolverTests
         using var _ = TempEnv("FRONTEND_BACKEND_API_KEY", "test-signing-key");
         var configManager = new ConfigManager();
 
-        var resolved = UsenetPassResolver.Resolve("typed-password", configManager);
+        var resolved = ArrApiKeyResolver.Resolve("typed-api-key", configManager);
 
-        Assert.Equal("typed-password", resolved);
+        Assert.Equal("typed-api-key", resolved);
     }
 
     [Fact]
-    public void Resolve_UnmasksStoredProviderPassword()
+    public void Resolve_UnmasksStoredArrApiKey()
     {
         using var _ = TempEnv("FRONTEND_BACKEND_API_KEY", "test-signing-key");
-        var stored = JsonSerializer.Serialize(new UsenetProviderConfig
+        var stored = JsonSerializer.Serialize(new ArrConfig
         {
-            Providers =
+            RadarrInstances =
             [
-                new UsenetProviderConfig.ConnectionDetails
+                new ArrConfig.ConnectionDetails
                 {
-                    Type = ProviderType.Pooled,
-                    Host = "news.example",
-                    Port = 563,
-                    UseSsl = true,
-                    User = "user",
-                    Pass = "stored-secret",
-                    MaxConnections = 10,
+                    Host = "http://radarr:7878",
+                    ApiKey = "stored-radarr-key",
                 }
-            ]
+            ],
+            SonarrInstances =
+            [
+                new ArrConfig.ConnectionDetails
+                {
+                    Host = "http://sonarr:8989",
+                    ApiKey = "stored-sonarr-key",
+                }
+            ],
         });
         var configManager = new ConfigManager();
         configManager.UpdateValues(
         [
-            new ConfigItem { ConfigName = "usenet.providers", ConfigValue = stored }
+            new ConfigItem { ConfigName = ConfigKeys.ArrInstances, ConfigValue = stored }
         ]);
 
         var masker = new ConfigSecretMasker("test-signing-key");
-        var masked = masker.MaskForResponse("usenet.providers", stored);
+        var masked = masker.MaskForResponse(ConfigKeys.ArrInstances, stored);
         using var document = JsonDocument.Parse(masked);
         var token = document.RootElement
-            .GetProperty("Providers")[0]
-            .GetProperty("Pass")
+            .GetProperty("SonarrInstances")[0]
+            .GetProperty("ApiKey")
             .GetString()!;
 
-        var resolved = UsenetPassResolver.Resolve(token, configManager);
+        var resolved = ArrApiKeyResolver.Resolve(token, configManager);
 
-        Assert.Equal("stored-secret", resolved);
+        Assert.Equal("stored-sonarr-key", resolved);
     }
 
     [Fact]
@@ -68,22 +70,17 @@ public class UsenetPassResolverTests
         [
             new ConfigItem
             {
-                ConfigName = "usenet.providers",
-                ConfigValue = JsonSerializer.Serialize(new UsenetProviderConfig
+                ConfigName = ConfigKeys.ArrInstances,
+                ConfigValue = JsonSerializer.Serialize(new ArrConfig
                 {
-                    Providers =
+                    RadarrInstances =
                     [
-                        new UsenetProviderConfig.ConnectionDetails
+                        new ArrConfig.ConnectionDetails
                         {
-                            Type = ProviderType.Pooled,
-                            Host = "news.example",
-                            Port = 563,
-                            UseSsl = true,
-                            User = "user",
-                            Pass = "stored-secret",
-                            MaxConnections = 10,
+                            Host = "http://radarr:7878",
+                            ApiKey = "stored-secret",
                         }
-                    ]
+                    ],
                 })
             }
         ]);
@@ -91,7 +88,7 @@ public class UsenetPassResolverTests
         var forged = $"{ConfigSecretMasker.MaskPrefix}AAAAAAAAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
         Assert.Throws<BadHttpRequestException>(() =>
-            UsenetPassResolver.Resolve(forged, configManager));
+            ArrApiKeyResolver.Resolve(forged, configManager));
     }
 
     private static IDisposable TempEnv(string name, string value)
