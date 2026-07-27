@@ -92,12 +92,19 @@ public sealed class ArrMonitoringAggregationTests
 
             ArrMonitoringService.LogResolutionSummary(resolutions, "http://sonarr:8989");
 
-            var warning = Assert.Single(sink.Events, e => e.Level == LogEventLevel.Warning);
+            // Filter by template property — other tests (and parallel classes) may write
+            // Warnings to the process-wide Serilog logger while this sink is installed.
+            var warning = Assert.Single(
+                sink.Events,
+                e => e.Level == LogEventLevel.Warning
+                     && e.Properties.ContainsKey("QueueItemTitle"));
             Assert.Equal(367, warning.Properties["Count"].LiteralValue());
             Assert.Equal(title, warning.Properties["QueueItemTitle"].LiteralValue());
             Assert.Equal("http://sonarr:8989", warning.Properties["Host"].LiteralValue());
             Assert.Equal(ArrConfig.QueueAction.Remove, warning.Properties["Action"].LiteralValue());
-            Assert.DoesNotContain(sink.Events, e => e.Level == LogEventLevel.Debug);
+            Assert.DoesNotContain(
+                sink.Events,
+                e => e.Level == LogEventLevel.Debug && e.Properties.ContainsKey("QueueItemTitle"));
         }
         finally
         {

@@ -361,6 +361,28 @@ public class StreamTraceBufferTests
     }
 
     [Fact]
+    public void EnableFor_WhileAlreadyRecording_PreservesEventsAndRefreshesTtl()
+    {
+        var buffer = new StreamTraceBuffer(100, enabled: false);
+        var session = Guid.NewGuid();
+        buffer.EnableFor(TimeSpan.FromMinutes(15), 5_000, StreamTraceBuffer.SourceEnv);
+        buffer.Seek(session, 5);
+        var before = buffer.GetStatus().EventCount;
+
+        var refreshed = buffer.EnableFor(
+            TimeSpan.FromMinutes(60),
+            StreamTraceBuffer.DefaultUiCapacity,
+            StreamTraceBuffer.SourceUi);
+
+        Assert.True(refreshed.Enabled);
+        Assert.Equal(StreamTraceBuffer.SourceUi, refreshed.Source);
+        Assert.Equal(before, refreshed.EventCount);
+        Assert.Equal(5_000, refreshed.Capacity);
+        Assert.Single(buffer.GetSessionEvents(session));
+        Assert.True(refreshed.ExpiresAtUnixMs > 0);
+    }
+
+    [Fact]
     public void ExpireRetentionForTests_SetsExpiryUntilDiscard()
     {
         var buffer = new StreamTraceBuffer(100);

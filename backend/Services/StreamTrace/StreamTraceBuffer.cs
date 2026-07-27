@@ -94,7 +94,16 @@ public sealed class StreamTraceBuffer
 
         lock (_gate)
         {
-            if (_recording == 0 && _buffer.Length > 0 && _nextSequence > 0)
+            if (_recording == 1)
+            {
+                // Already capturing (UI re-enable, or UI enable while STREAM_TRACE_EVENTS
+                // is recording). Refresh TTL/source only — wiping would destroy the
+                // evidence StopRecording/Discard exist to protect.
+                _source = isUi ? SourceUi : SourceEnv;
+                Volatile.Write(ref _expiresAtUnixMs, expiresAt);
+                Volatile.Write(ref _retainedUntilUnixMs, 0);
+            }
+            else if (_buffer.Length > 0 && _nextSequence > 0)
             {
                 // Resume the retained ring exactly as-is. Capacity stays unchanged;
                 // especially do not shrink an env-originated capture behind the operator's back.
