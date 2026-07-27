@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -10,11 +11,13 @@ using NzbWebDAV.Database.Models.Metrics;
 using NzbWebDAV.Logging;
 using NzbWebDAV.Services.Metrics;
 using NzbWebDAV.Streams;
+using Serilog;
 
 namespace NzbWebDAV.Services.SupportPack;
 
 public sealed class SupportPackService(
     LogBufferSink logBuffer,
+    WarningLogBuffer warningLogBuffer,
     ConfigManager configManager,
     MetricsWriter metricsWriter,
     ProviderBytesTracker bytesTracker,
@@ -26,7 +29,6 @@ public sealed class SupportPackService(
     private const long HourMs = 60 * MinuteMs;
     private const long DayMs = 24 * HourMs;
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
-    private readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
 
     internal async Task WriteAsync(Stream output, CancellationToken cancellationToken)
     {
@@ -34,9 +36,12 @@ public sealed class SupportPackService(
         var config = configManager.GetDiagnosticSnapshot();
         var redactor = new SupportPackRedactor(CollectSecrets(config));
         var logSnapshot = logBuffer.Snapshot(logBuffer.Capacity, null, null, null, null);
+        var warningSink = warningLogBuffer.Sink;
+        var warningSnapshot = warningSink.Snapshot(warningSink.Capacity, null, null, null, null);
         var sectionStatus = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["logs"] = "included",
+            ["warnings"] = "included",
             ["configuration"] = "included",
             ["environment"] = "included",
         };
@@ -47,6 +52,11 @@ public sealed class SupportPackService(
             archive,
             "logs/backend.log",
             redactor.RedactText(FormatLogs(logSnapshot.Entries)),
+            cancellationToken).ConfigureAwait(false);
+        await WriteTextAsync(
+            archive,
+            "logs/warnings.log",
+            redactor.RedactText(FormatLogs(warningSnapshot.Entries)),
             cancellationToken).ConfigureAwait(false);
         await WriteJsonAsync(
             archive,
@@ -76,7 +86,8 @@ public sealed class SupportPackService(
         await WriteJsonAsync(
             archive,
             "manifest.json",
-            await BuildManifestAsync(generatedAt, logSnapshot, sectionStatus, redactor, cancellationToken)
+            await BuildManifestAsync(generatedAt, logSnapshot, warningSnapshot, sectionStatus, redactor,
+                    cancellationToken)
                 .ConfigureAwait(false),
             redactor,
             cancellationToken).ConfigureAwait(false);
@@ -90,6 +101,11 @@ public sealed class SupportPackService(
         active Settings snapshot, runtime information, and aggregate metrics.
         Backend logs are cleared when NzbDAV restarts. Frontend and container logs
         are not included.
+
+        logs/backend.log holds the most recent events of every level, so a busy or
+        debug-level install can push older events out of it. logs/warnings.log keeps
+        the last 500 warnings and errors separately for that reason - check it first
+        when the main log looks like it only contains routine activity.
 
         The archive deliberately excludes database files, backups, blobs/NZBs,
         environment files, session/API key files, crash dumps, stream traces, and
@@ -122,13 +138,15 @@ public sealed class SupportPackService(
         var configPath = DavDatabaseContext.ConfigPath;
         var root = Path.GetPathRoot(Path.GetFullPath(configPath)) ?? configPath;
         var drive = new DriveInfo(root);
+        var uptime = ProcessUptime();
 
         return new
         {
             generatedAtUtc = generatedAt,
             appVersion = ConfigManager.AppVersion,
             commit = Environment.GetEnvironmentVariable("NZBDAV_COMMIT_SHA"),
-            uptimeSeconds = (long)(generatedAt - _startedAt).TotalSeconds,
+            uptimeSeconds = (long)uptime.TotalSeconds,
+            processStartedAtUtc = generatedAt - uptime,
             runtime = new
             {
                 framework = RuntimeInformation.FrameworkDescription,
@@ -323,6 +341,7 @@ public sealed class SupportPackService(
     private async Task<object> BuildManifestAsync(
         DateTimeOffset generatedAt,
         LogSnapshot logs,
+        LogSnapshot warnings,
         IReadOnlyDictionary<string, string> sectionStatus,
         SupportPackRedactor redactor,
         CancellationToken cancellationToken)
@@ -336,6 +355,13 @@ public sealed class SupportPackService(
             commit = Environment.GetEnvironmentVariable("NZBDAV_COMMIT_SHA"),
             migrations = new { main = mainMigration, metrics = metricsMigration },
             logs = new { count = logs.Entries.Count, logs.OldestSequence, logs.NewestSequence, capacity = logBuffer.Capacity },
+            warnings = new
+            {
+                count = warnings.Entries.Count,
+                warnings.OldestSequence,
+                warnings.NewestSequence,
+                capacity = warningLogBuffer.Sink.Capacity,
+            },
             sections = sectionStatus,
             redaction = new { secrets = redactor.SecretsRedacted, ipAddresses = redactor.AddressesPseudonymized },
         };
@@ -451,6 +477,30 @@ public sealed class SupportPackService(
 
     private static long? FileSize(string path) =>
         File.Exists(path) ? new FileInfo(path).Length : null;
+
+    /// <summary>
+    /// Real uptime of the backend process. This used to be measured from this service's
+    /// own construction, but DI creates it lazily on the first support-pack download, so a
+    /// backend running for hours reported a few seconds and made the log buffer's
+    /// timestamps look impossible. Process start time is absolute, so reading it on demand
+    /// stays accurate. Note that Environment.TickCount64 is unusable here: inside a
+    /// container it reports the host's uptime, not this process's.
+    /// </summary>
+    private static TimeSpan ProcessUptime()
+    {
+        try
+        {
+            using var process = Process.GetCurrentProcess();
+            var uptime = DateTimeOffset.UtcNow - process.StartTime.ToUniversalTime();
+            if (uptime > TimeSpan.Zero) return uptime;
+        }
+        catch (Exception e)
+        {
+            Log.Debug(e, "Support pack: could not read the process start time");
+        }
+
+        return TimeSpan.Zero;
+    }
 
     private static string FormatLogs(IEnumerable<LogEntry> entries)
     {
