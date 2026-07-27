@@ -24,8 +24,11 @@ internal static class ReadonlyWriteRejectionLog
             return;
 
         Log.Warning(
-            "Refused to {Operation} under read-only path {Scope} — {Attempts} attempt(s) in the last {Minutes} minutes, " +
-            "most recently {ItemName}. A client is trying to write into the NzbDav mount, which does not accept writes.",
-            operation, scopeName, suppressed + 1, Interval.TotalMinutes, itemName);
+            "Refused to {Operation} under a read-only path — {Attempts} attempt(s) in the last " +
+            "{Minutes} minutes, most recently {ItemName} in {Scope}. A client is trying to write " +
+            "into the NzbDav mount, which does not accept writes.",
+            operation, suppressed + 1, Interval.TotalMinutes, itemName, scopeName);
     }
+
+    internal static void ResetForTests() => Throttle.Clear();
 }

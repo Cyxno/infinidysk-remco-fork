@@ -52,6 +52,15 @@ public abstract class BaseStoreReadonlyCollection : BaseStoreCollection
         return false;
     }
 
+    /// <summary>
+    /// Throttle scope for refused writes. Deliberately coarser than <see cref="UniqueKey"/>:
+    /// a client writing metadata sidecars touches one directory per release, so keying on
+    /// the directory produced one warning per release and still flooded the buffer. The
+    /// concrete store type is the safe default; mounts that need a shared key (e.g.
+    /// completed-symlinks) override this. The refused path is still reported in the message.
+    /// </summary>
+    protected virtual string WriteRejectionScopeKey => GetType().Name;
+
     private void LogRejected(string operation, string itemName) =>
-        ReadonlyWriteRejectionLog.Rejected(operation, itemName, Name, UniqueKey);
+        ReadonlyWriteRejectionLog.Rejected(operation, itemName, Name, WriteRejectionScopeKey);
 }
