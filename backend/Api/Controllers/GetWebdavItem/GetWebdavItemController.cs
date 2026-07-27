@@ -223,7 +223,8 @@ public class GetWebdavItemController(
         string? message = null)
     {
         activeReadRegistry.SetEndReason(sessionId, reason);
-        streamTrace.RangeEnd(traceRange, reason, activeReadRegistry.GetBytesRead(sessionId), message);
+        streamTrace.RangeEnd(
+            sessionId, traceRange, reason, activeReadRegistry.GetBytesRead(sessionId), message);
     }
 
     private async Task CopyAndReportAsync(

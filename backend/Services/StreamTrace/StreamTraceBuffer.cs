@@ -130,6 +130,7 @@ public sealed class StreamTraceBuffer
     {
         lock (_gate)
         {
+            // Idempotent: repeated "off" calls must not extend the retention deadline.
             if (_recording == 0)
                 return GetStatusNoLock();
 
@@ -139,9 +140,9 @@ public sealed class StreamTraceBuffer
                 Volatile.Write(ref _retainedUntilUnixMs, Now() + (long)RetentionWindow.TotalMilliseconds);
             else
                 ReleaseBufferNoLock();
-        }
 
-        return GetStatus();
+            return GetStatusNoLock();
+        }
     }
 
     /// <summary>
@@ -151,9 +152,10 @@ public sealed class StreamTraceBuffer
     public StreamTraceStatus Discard()
     {
         lock (_gate)
+        {
             ReleaseBufferNoLock();
-
-        return GetStatus();
+            return GetStatusNoLock();
+        }
     }
 
     /// <summary>
@@ -415,14 +417,20 @@ public sealed class StreamTraceBuffer
         session.Bucket(value.Generation)?.AddConnection(wait.Ticks, wasReused);
     }
 
+    /// <summary>
+    /// Records how a range finished. <paramref name="range"/> may be null when no range was
+    /// opened — tracing started mid-read, or the read timed out while the stream was still
+    /// opening. That terminal event is the most useful one in the trace, so it is still
+    /// recorded; it simply carries no generation and no stall attribution.
+    /// </summary>
     public void RangeEnd(
+        Guid sessionId,
         StreamTraceRangeContext? range,
         ReadSession.EndReasonCode endReason,
         long bytesServed,
         string? message = null)
     {
-        if (range is not { } value) return;
-        var stalls = _sessions.TryGetValue(value.SessionId, out var session)
+        var stalls = range is { } value && _sessions.TryGetValue(value.SessionId, out var session)
             ? session.Bucket(value.Generation)
             : null;
 
@@ -430,12 +438,12 @@ public sealed class StreamTraceBuffer
         {
             Sequence = 0,
             AtUnixMs = Now(),
-            SessionId = value.SessionId,
+            SessionId = sessionId,
             Kind = StreamTraceKind.RangeEnd.ToString(),
             EndReason = StreamTraceEvent.EndReasonName(endReason),
             BytesServed = bytesServed,
             Message = message,
-            RangeGeneration = value.Generation,
+            RangeGeneration = range?.Generation,
             RangeStalls = stalls,
         });
     }

@@ -241,7 +241,7 @@ public sealed class SupportPackContentsTests : IDisposable
         var range = buffer.RangeOpen(session, "/view/movie.mkv", "GET", 0, 99, 1000, "ua", "203.0.113.10");
         buffer.Seek(session, 50);
         buffer.Segment(session, "provider-a", SegmentFetch.FetchStatus.Ok, 12, 0, "msgid@a");
-        buffer.RangeEnd(range, ReadSession.EndReasonCode.Completed, 100);
+        buffer.RangeEnd(session, range, ReadSession.EndReasonCode.Completed, 100);
 
         var enabled = await ReadPackEntriesAsync(
             new LogBufferSink(10),

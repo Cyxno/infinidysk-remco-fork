@@ -351,7 +351,8 @@ public class GetAndHeadHandlerPatch : IRequestHandler
         string? message = null)
     {
         _activeReadRegistry.SetEndReason(sessionId, reason);
-        _streamTrace.RangeEnd(traceRange, reason, _activeReadRegistry.GetBytesRead(sessionId), message);
+        _streamTrace.RangeEnd(
+            sessionId, traceRange, reason, _activeReadRegistry.GetBytesRead(sessionId), message);
     }
 
     private async Task CopyToAsync(
