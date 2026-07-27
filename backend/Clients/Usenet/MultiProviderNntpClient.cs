@@ -68,6 +68,9 @@ public class MultiProviderNntpClient(
     private static readonly AsyncLocal<Guid?> ReadSessionScope = new();
     internal static Guid? CurrentReadSessionId => ReadSessionScope.Value;
 
+    private static readonly AsyncLocal<StreamTraceRangeContext?> StreamTraceRangeScope = new();
+    internal static StreamTraceRangeContext? CurrentStreamTraceRange => StreamTraceRangeScope.Value;
+
     /// <summary>
     /// Tag the current async flow with a read-session id so SegmentFetch rows
     /// emitted while fulfilling this read can be correlated back to the session.
@@ -84,6 +87,18 @@ public class MultiProviderNntpClient(
             logProp.Dispose();
             ReadSessionScope.Value = previous;
         });
+    }
+
+    /// <summary>
+    /// Bind the exact <see cref="StreamTraceRangeContext"/> returned by RangeOpen to this
+    /// async flow so overlapping ranges on the same read session keep independent stall
+    /// attribution. Disposing restores the previous token.
+    /// </summary>
+    public static IDisposable BeginStreamTraceRangeScope(StreamTraceRangeContext? range)
+    {
+        var previous = StreamTraceRangeScope.Value;
+        StreamTraceRangeScope.Value = range;
+        return new ScopeReleaser(() => StreamTraceRangeScope.Value = previous);
     }
 
     private sealed class ScopeReleaser(Action onDispose) : IDisposable
@@ -258,6 +273,7 @@ public class MultiProviderNntpClient(
             fallbackAdmission.TrySetResult();
         }
 
+        var primaryTraceRange = CurrentStreamTraceRange;
         var primaryStopwatch = Stopwatch.StartNew();
         List<(string Host, SegmentFetch.FetchStatus Reason)>? priorMisses = null;
         // Fresh per article resolution. When primary re-probe is enabled, do not mark the
@@ -276,7 +292,8 @@ public class MultiProviderNntpClient(
             {
                 primaryStopwatch.Stop();
                 var reason = ClassifyAndRecordFailure(
-                    primaryProvider.MetricsKey, e, primaryStopwatch.ElapsedMilliseconds, 0);
+                    primaryProvider.MetricsKey, e, primaryStopwatch.ElapsedMilliseconds, 0,
+                    primaryTraceRange);
                 (priorMisses ??= []).Add((primaryProvider.MetricsKey, reason));
                 lastException = ExceptionDispatchInfo.Capture(e);
             }
@@ -286,7 +303,7 @@ public class MultiProviderNntpClient(
                 primaryStopwatch.Stop();
                 _usageTracker.RecordSuccess(primaryProvider.MetricsKey);
                 RecordFetch(primaryProvider.MetricsKey, SegmentFetch.FetchStatus.Ok,
-                    primaryStopwatch.ElapsedMilliseconds, 0);
+                    primaryStopwatch.ElapsedMilliseconds, 0, primaryTraceRange);
                 return WrapProviderResponse(response, primaryProvider.MetricsKey);
             }
 
@@ -296,7 +313,7 @@ public class MultiProviderNntpClient(
             {
                 primaryStopwatch.Stop();
                 RecordFetch(primaryProvider.MetricsKey, SegmentFetch.FetchStatus.Missing,
-                    primaryStopwatch.ElapsedMilliseconds, 0);
+                    primaryStopwatch.ElapsedMilliseconds, 0, primaryTraceRange);
                 (priorMisses ??= []).Add((primaryProvider.MetricsKey, SegmentFetch.FetchStatus.Missing));
             }
 
@@ -368,6 +385,7 @@ public class MultiProviderNntpClient(
 
                     coordinator.AddTransfer();
                     var deferredCallback = new DeferredArticleBodyCallback();
+                    var traceRange = CurrentStreamTraceRange;
                     var stopwatch = Stopwatch.StartNew();
                     try
                     {
@@ -379,7 +397,7 @@ public class MultiProviderNntpClient(
                         {
                             _usageTracker.RecordSuccess(provider.MetricsKey);
                             RecordFetch(provider.MetricsKey, SegmentFetch.FetchStatus.Ok,
-                                stopwatch.ElapsedMilliseconds, priorMisses?.Count ?? 0);
+                                stopwatch.ElapsedMilliseconds, priorMisses?.Count ?? 0, traceRange);
                             if (priorMisses is { Count: > 0 })
                             {
                                 _usageTracker.RecordFailoverSave();
@@ -402,7 +420,7 @@ public class MultiProviderNntpClient(
                         else
                         {
                             RecordFetch(provider.MetricsKey, SegmentFetch.FetchStatus.Missing,
-                                stopwatch.ElapsedMilliseconds, priorMisses?.Count ?? 0);
+                                stopwatch.ElapsedMilliseconds, priorMisses?.Count ?? 0, traceRange);
                             (priorMisses ??= []).Add((provider.MetricsKey, SegmentFetch.FetchStatus.Missing));
                             if (UsenetArticleAvailability.IsDefinitiveMissing(response))
                             {
@@ -420,7 +438,7 @@ public class MultiProviderNntpClient(
                         stopwatch.Stop();
                         var reason = ClassifyAndRecordFailure(
                             provider.MetricsKey, e, stopwatch.ElapsedMilliseconds,
-                            priorMisses?.Count ?? 0);
+                            priorMisses?.Count ?? 0, traceRange);
                         (priorMisses ??= []).Add((provider.MetricsKey, reason));
                         deferredCallback.Discard();
                         coordinator.CompleteAttempt();
@@ -577,6 +595,7 @@ public class MultiProviderNntpClient(
             }
 
             var deferredCallback = new DeferredArticleBodyCallback();
+            var traceRange = CurrentStreamTraceRange;
             var stopwatch = Stopwatch.StartNew();
             try
             {
@@ -589,7 +608,7 @@ public class MultiProviderNntpClient(
                     if (attribution != null) attribution.Host = provider.Host;
                     _usageTracker.RecordSuccess(provider.MetricsKey);
                     RecordFetch(provider.MetricsKey, SegmentFetch.FetchStatus.Ok,
-                        stopwatch.ElapsedMilliseconds, attemptIndex);
+                        stopwatch.ElapsedMilliseconds, attemptIndex, traceRange);
                     if (attemptIndex > 0)
                     {
                         _usageTracker.RecordFailoverSave();
@@ -604,7 +623,7 @@ public class MultiProviderNntpClient(
                 if (UsenetArticleAvailability.IsDefinitiveMissing(result))
                 {
                     RecordFetch(provider.MetricsKey, SegmentFetch.FetchStatus.Missing,
-                        stopwatch.ElapsedMilliseconds, attemptIndex);
+                        stopwatch.ElapsedMilliseconds, attemptIndex, traceRange);
                     (priorMisses ??= []).Add((provider.MetricsKey, SegmentFetch.FetchStatus.Missing));
                     lastNoArticleResult = result;
                     lastOutcomeWasException = false;
@@ -615,7 +634,7 @@ public class MultiProviderNntpClient(
                 }
 
                 RecordFetch(provider.MetricsKey, SegmentFetch.FetchStatus.Missing,
-                    stopwatch.ElapsedMilliseconds, attemptIndex);
+                    stopwatch.ElapsedMilliseconds, attemptIndex, traceRange);
                 InvokeCompletionCallback(
                     onConnectionReadyAgain, ArticleBodyResult.NotRetrieved);
                 return result;
@@ -624,7 +643,8 @@ public class MultiProviderNntpClient(
             {
                 stopwatch.Stop();
                 var reason = ClassifyAndRecordFailure(
-                    provider.MetricsKey, e, stopwatch.ElapsedMilliseconds, attemptIndex);
+                    provider.MetricsKey, e, stopwatch.ElapsedMilliseconds, attemptIndex,
+                    traceRange);
                 (priorMisses ??= []).Add((provider.MetricsKey, reason));
                 deferredCallback.Discard();
                 lastException = ExceptionDispatchInfo.Capture(e);
@@ -701,6 +721,7 @@ public class MultiProviderNntpClient(
             }
 
             lastAttemptedProvider = provider;
+            var traceRange = CurrentStreamTraceRange;
             var stopwatch = Stopwatch.StartNew();
             try
             {
@@ -712,7 +733,8 @@ public class MultiProviderNntpClient(
                 // never a connection error.
                 if (UsenetArticleAvailability.IsDefinitiveMissing(result))
                 {
-                    RecordFetch(provider.MetricsKey, SegmentFetch.FetchStatus.Missing, stopwatch.ElapsedMilliseconds, attemptIndex);
+                    RecordFetch(provider.MetricsKey, SegmentFetch.FetchStatus.Missing,
+                        stopwatch.ElapsedMilliseconds, attemptIndex, traceRange);
                     (priorMisses ??= new()).Add((provider.MetricsKey, SegmentFetch.FetchStatus.Missing));
                     lastNoArticleResult = result;
                     lastOutcomeWasException = false;
@@ -733,7 +755,8 @@ public class MultiProviderNntpClient(
                                           or UsenetResponseType.ArticleRetrievedHeadAndBodyFollow)
                 {
                     _usageTracker.RecordSuccess(provider.MetricsKey);
-                    RecordFetch(provider.MetricsKey, SegmentFetch.FetchStatus.Ok, stopwatch.ElapsedMilliseconds, attemptIndex);
+                    RecordFetch(provider.MetricsKey, SegmentFetch.FetchStatus.Ok,
+                        stopwatch.ElapsedMilliseconds, attemptIndex, traceRange);
                     if (attemptIndex > 0)
                     {
                         _usageTracker.RecordFailoverSave();
@@ -744,7 +767,8 @@ public class MultiProviderNntpClient(
                 else if (result is UsenetDecodedBodyResponse or UsenetDecodedArticleResponse)
                 {
                     // BODY/ARTICLE response with an unexpected (non-success, non-430) response type.
-                    RecordFetch(provider.MetricsKey, SegmentFetch.FetchStatus.Missing, stopwatch.ElapsedMilliseconds, attemptIndex);
+                    RecordFetch(provider.MetricsKey, SegmentFetch.FetchStatus.Missing,
+                        stopwatch.ElapsedMilliseconds, attemptIndex, traceRange);
                 }
                 // STAT/HEAD/DATE successes: intentionally no SegmentFetch row (not a segment transfer;
                 // matches StatsPipelinedAsync which records nothing).
@@ -755,7 +779,8 @@ public class MultiProviderNntpClient(
             {
                 stopwatch.Stop();
                 var reason = ClassifyAndRecordFailure(
-                    provider.MetricsKey, e, stopwatch.ElapsedMilliseconds, attemptIndex);
+                    provider.MetricsKey, e, stopwatch.ElapsedMilliseconds, attemptIndex,
+                    traceRange);
                 (priorMisses ??= new()).Add((provider.MetricsKey, reason));
                 lastException = ExceptionDispatchInfo.Capture(e);
                 lastOutcomeWasException = true;
@@ -829,13 +854,20 @@ public class MultiProviderNntpClient(
         }
     }
 
-    private void RecordFetch(string metricsKey, SegmentFetch.FetchStatus status, long durationMs, int retries)
+    private void RecordFetch(
+        string metricsKey,
+        SegmentFetch.FetchStatus status,
+        long durationMs,
+        int retries,
+        StreamTraceRangeContext? traceRange)
     {
-        if (ReadSessionScope.Value is { } sessionId)
+        if (traceRange is { } range)
         {
-            streamTrace?.Segment(sessionId, metricsKey, status, (int)Math.Min(int.MaxValue, durationMs), retries);
-            streamTrace?.AddStall(
-                sessionId, StreamStallKind.ProviderWait, TimeSpan.FromMilliseconds(durationMs));
+            streamTrace?.Segment(
+                range.SessionId, metricsKey, status, (int)Math.Min(int.MaxValue, durationMs), retries);
+            // Billed to the generation captured when the stopwatch started, not the range
+            // that happens to be open now — a prefetch can outlive the range that asked for it.
+            streamTrace?.AddFetchWait(traceRange, TimeSpan.FromMilliseconds(durationMs));
         }
 
         if (metricsWriter == null) return;
@@ -857,10 +889,11 @@ public class MultiProviderNntpClient(
     /// packs stay diagnosable without a schema change.
     /// </summary>
     private SegmentFetch.FetchStatus ClassifyAndRecordFailure(
-        string metricsKey, Exception exception, long durationMs, int retries)
+        string metricsKey, Exception exception, long durationMs, int retries,
+        StreamTraceRangeContext? traceRange)
     {
         var status = ClassifyException(exception);
-        RecordFetch(metricsKey, status, durationMs, retries);
+        RecordFetch(metricsKey, status, durationMs, retries, traceRange);
         if (status == SegmentFetch.FetchStatus.Other)
         {
             Log.Debug(

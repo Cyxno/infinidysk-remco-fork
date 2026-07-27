@@ -22,15 +22,11 @@ public static class StreamTrace
     public static void TryRetry(Guid sessionId, string segmentId, int attempt, string? message = null)
         => _buffer?.Retry(sessionId, segmentId, attempt, message);
 
-    public static void TryStall(Guid? sessionId, StreamStallKind kind, TimeSpan elapsed)
-    {
-        if (sessionId is { } id) _buffer?.AddStall(id, kind, elapsed);
-    }
+    public static void TryStall(StreamTraceRangeContext? range, StreamStallKind kind, TimeSpan elapsed)
+        => _buffer?.AddStall(range, kind, elapsed);
 
-    public static void TryConnectionAcquired(Guid? sessionId, TimeSpan wait, bool wasReused)
-    {
-        if (sessionId is { } id) _buffer?.ConnectionAcquired(id, wait, wasReused);
-    }
+    public static void TryConnectionAcquired(StreamTraceRangeContext? range, TimeSpan wait, bool wasReused)
+        => _buffer?.ConnectionAcquired(range, wait, wasReused);
 
     /// <summary>
     /// True when a stall measurement is worth taking. Callers in hot loops check this

@@ -238,10 +238,10 @@ public sealed class SupportPackContentsTests : IDisposable
         var buffer = new StreamTraceBuffer(100, enabled: false);
         buffer.EnableFor(TimeSpan.FromMinutes(15), 100, StreamTraceBuffer.SourceUi);
         var session = Guid.NewGuid();
-        buffer.RangeOpen(session, "/view/movie.mkv", "GET", 0, 99, 1000, "ua", "203.0.113.10");
+        var range = buffer.RangeOpen(session, "/view/movie.mkv", "GET", 0, 99, 1000, "ua", "203.0.113.10");
         buffer.Seek(session, 50);
         buffer.Segment(session, "provider-a", SegmentFetch.FetchStatus.Ok, 12, 0, "msgid@a");
-        buffer.RangeEnd(session, ReadSession.EndReasonCode.Completed, 100);
+        buffer.RangeEnd(range, ReadSession.EndReasonCode.Completed, 100);
 
         var enabled = await ReadPackEntriesAsync(
             new LogBufferSink(10),

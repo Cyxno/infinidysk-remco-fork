@@ -28,6 +28,7 @@ public sealed class StreamTraceBuffer
     private readonly object _gate = new();
     private volatile StreamTraceEvent?[] _buffer = [];
     private long _nextSequence;
+    private long _nextRangeGeneration;
     private long _expiresAtUnixMs;
     private string _source = SourceEnv;
     private int _capacity;
@@ -139,21 +140,21 @@ public sealed class StreamTraceBuffer
         }
     }
 
-    public void Record(StreamTraceEvent entry)
+    private SessionMeta? Record(StreamTraceEvent entry)
     {
-        if (!Enabled) return;
+        if (!Enabled) return null;
         var sequence = Interlocked.Increment(ref _nextSequence);
         var withSeq = entry with { Sequence = sequence };
         var buffer = _buffer;
-        if (buffer.Length == 0) return;
+        if (buffer.Length == 0) return null;
         lock (_gate)
         {
             buffer = _buffer;
-            if (buffer.Length == 0) return;
+            if (buffer.Length == 0) return null;
             buffer[(sequence - 1) % buffer.Length] = withSeq;
         }
 
-        _sessions.AddOrUpdate(
+        var session = _sessions.AddOrUpdate(
             entry.SessionId,
             _ => new SessionMeta
             {
@@ -174,9 +175,14 @@ public sealed class StreamTraceBuffer
             });
 
         TrimSessionsIfNeeded();
+        return session;
     }
 
-    public void RangeOpen(
+    /// <summary>
+    /// Opens a trace generation for this exact HTTP range and returns the token the
+    /// request must carry through its async flow. Returning null means tracing is off.
+    /// </summary>
+    public StreamTraceRangeContext? RangeOpen(
         Guid sessionId,
         string path,
         string method,
@@ -186,7 +192,9 @@ public sealed class StreamTraceBuffer
         string? userAgent,
         string? clientIp)
     {
-        Record(new StreamTraceEvent
+        if (!Enabled) return null;
+        var generation = Interlocked.Increment(ref _nextRangeGeneration);
+        var session = Record(new StreamTraceEvent
         {
             Sequence = 0,
             AtUnixMs = Now(),
@@ -199,7 +207,12 @@ public sealed class StreamTraceBuffer
             FileSize = fileSize,
             UserAgent = userAgent,
             ClientIp = clientIp,
+            RangeGeneration = generation,
         });
+        if (session is null)
+            return null;
+        session.OpenGeneration(generation);
+        return new StreamTraceRangeContext(sessionId, generation);
     }
 
     public void Seek(Guid sessionId, long offset)
@@ -279,56 +292,65 @@ public sealed class StreamTraceBuffer
     }
 
     /// <summary>
-    /// Adds time spent blocked on <paramref name="kind"/> to the current range of
-    /// <paramref name="sessionId"/>. Ticks are accumulated rather than milliseconds so
+    /// Adds time spent blocked on <paramref name="kind"/> to the range identified by
+    /// <paramref name="range"/>. Ticks are accumulated rather than milliseconds so
     /// the many sub-millisecond client writes in a range still add up. No-ops when
-    /// tracing is off or the session has no open range.
+    /// the token is null or the generation bucket is gone.
     /// </summary>
-    public void AddStall(Guid sessionId, StreamStallKind kind, TimeSpan elapsed)
+    public void AddStall(StreamTraceRangeContext? range, StreamStallKind kind, TimeSpan elapsed)
     {
-        if (!Enabled || elapsed <= TimeSpan.Zero) return;
-        if (!_sessions.TryGetValue(sessionId, out var session)) return;
-        session.Stalls.Add(kind, elapsed.Ticks);
+        if (range is not { } value) return;
+        if (elapsed <= TimeSpan.Zero) return;
+        if (!_sessions.TryGetValue(value.SessionId, out var session)) return;
+        session.Bucket(value.Generation)?.Add(kind, elapsed.Ticks);
     }
 
     /// <summary>
-    /// Records a connection acquisition for the current range: how long the borrower
+    /// Records provider-wait time for a fetch started under <paramref name="range"/>.
+    /// Late completions still credit the originating generation via the live totals
+    /// referenced by that range's <c>RangeEnd</c> event.
+    /// </summary>
+    public void AddFetchWait(StreamTraceRangeContext? range, TimeSpan elapsed)
+    {
+        if (range is not { } value) return;
+        if (!_sessions.TryGetValue(value.SessionId, out var session)) return;
+        session.Bucket(value.Generation)?.AddFetch(Math.Max(0, elapsed.Ticks));
+    }
+
+    /// <summary>
+    /// Records a connection acquisition for the given range: how long the borrower
     /// waited, and whether the pool handed back an idle connection or had to open a
     /// new one. A range full of fresh handshakes points at connection churn.
     /// </summary>
-    public void ConnectionAcquired(Guid sessionId, TimeSpan wait, bool wasReused)
+    public void ConnectionAcquired(StreamTraceRangeContext? range, TimeSpan wait, bool wasReused)
     {
-        if (!Enabled) return;
-        if (!_sessions.TryGetValue(sessionId, out var session)) return;
-        session.Stalls.AddConnection(wait.Ticks, wasReused);
+        if (range is not { } value) return;
+        if (!_sessions.TryGetValue(value.SessionId, out var session)) return;
+        session.Bucket(value.Generation)?.AddConnection(wait.Ticks, wasReused);
     }
 
     public void RangeEnd(
-        Guid sessionId,
+        StreamTraceRangeContext? range,
         ReadSession.EndReasonCode endReason,
         long bytesServed,
         string? message = null)
     {
-        var stalls = _sessions.TryGetValue(sessionId, out var session)
-            ? session.Stalls.DrainForRange()
-            : default;
+        if (range is not { } value) return;
+        var stalls = _sessions.TryGetValue(value.SessionId, out var session)
+            ? session.Bucket(value.Generation)
+            : null;
 
         Record(new StreamTraceEvent
         {
             Sequence = 0,
             AtUnixMs = Now(),
-            SessionId = sessionId,
+            SessionId = value.SessionId,
             Kind = StreamTraceKind.RangeEnd.ToString(),
             EndReason = StreamTraceEvent.EndReasonName(endReason),
             BytesServed = bytesServed,
             Message = message,
-            ConnectionWaitMs = stalls.ConnectionWaitMs,
-            ProviderWaitMs = stalls.ProviderWaitMs,
-            BodyDrainMs = stalls.BodyDrainMs,
-            ConsumerWaitMs = stalls.ConsumerWaitMs,
-            ClientWriteMs = stalls.ClientWriteMs,
-            ConnectionsOpened = stalls.ConnectionsOpened,
-            ConnectionsReused = stalls.ConnectionsReused,
+            RangeGeneration = value.Generation,
+            RangeStalls = stalls,
         });
     }
 
@@ -414,91 +436,37 @@ public sealed class StreamTraceBuffer
 
     private sealed class SessionMeta
     {
+        // Ranges are attributed by generation because a fetch started in one range can
+        // resolve after it ended. A handful of closed generations stay addressable so
+        // late completions can still update the RangeEnd event that references that bucket.
+        // Sixteen remains tiny but avoids dropping ordinary rapid-scrub completions.
+        private const int RetainedGenerations = 16;
+        private readonly object _generationGate = new();
+        private readonly Dictionary<long, StreamTraceRangeStalls> _buckets = new();
+
         public Guid SessionId { get; init; }
         public long FirstAt { get; set; }
         public long LastAt { get; set; }
         public string? Path { get; set; }
         public int EventCount { get; set; }
         public string? LastKind { get; set; }
-        public StallTotals Stalls { get; } = new();
-    }
 
-    /// <summary>
-    /// Per-range stall accumulator. Written concurrently by every prefetch task and the
-    /// consumer, so every field moves through Interlocked; drained and zeroed when the
-    /// range ends so the next range on the same session starts clean.
-    /// </summary>
-    private sealed class StallTotals
-    {
-        private long _connectionWaitTicks;
-        private long _providerWaitTicks;
-        private long _bodyDrainTicks;
-        private long _consumerWaitTicks;
-        private long _clientWriteTicks;
-        private long _connectionsOpened;
-        private long _connectionsReused;
-
-        public void Add(StreamStallKind kind, long ticks)
+        public void OpenGeneration(long generation)
         {
-            switch (kind)
+            lock (_generationGate)
             {
-                case StreamStallKind.ConnectionWait:
-                    Interlocked.Add(ref _connectionWaitTicks, ticks);
-                    break;
-                case StreamStallKind.ProviderWait:
-                    Interlocked.Add(ref _providerWaitTicks, ticks);
-                    break;
-                case StreamStallKind.BodyDrain:
-                    Interlocked.Add(ref _bodyDrainTicks, ticks);
-                    break;
-                case StreamStallKind.ConsumerWait:
-                    Interlocked.Add(ref _consumerWaitTicks, ticks);
-                    break;
-                case StreamStallKind.ClientWrite:
-                    Interlocked.Add(ref _clientWriteTicks, ticks);
-                    break;
+                _buckets[generation] = new StreamTraceRangeStalls();
+                while (_buckets.Count > RetainedGenerations)
+                    _buckets.Remove(_buckets.Keys.Min());
             }
         }
 
-        public void AddConnection(long waitTicks, bool wasReused)
+        public StreamTraceRangeStalls? Bucket(long generation)
         {
-            if (waitTicks > 0) Interlocked.Add(ref _connectionWaitTicks, waitTicks);
-            if (wasReused)
-                Interlocked.Increment(ref _connectionsReused);
-            else
-                Interlocked.Increment(ref _connectionsOpened);
-        }
-
-        public StallSnapshot DrainForRange() => new(
-            Milliseconds(ref _connectionWaitTicks),
-            Milliseconds(ref _providerWaitTicks),
-            Milliseconds(ref _bodyDrainTicks),
-            Milliseconds(ref _consumerWaitTicks),
-            Milliseconds(ref _clientWriteTicks),
-            Count(ref _connectionsOpened),
-            Count(ref _connectionsReused));
-
-        private static long? Milliseconds(ref long ticks)
-        {
-            var drained = Interlocked.Exchange(ref ticks, 0);
-            return drained <= 0 ? null : drained / TimeSpan.TicksPerMillisecond;
-        }
-
-        private static long? Count(ref long counter)
-        {
-            var drained = Interlocked.Exchange(ref counter, 0);
-            return drained <= 0 ? null : drained;
+            if (generation <= 0) return null;
+            lock (_generationGate) return _buckets.GetValueOrDefault(generation);
         }
     }
-
-    private readonly record struct StallSnapshot(
-        long? ConnectionWaitMs,
-        long? ProviderWaitMs,
-        long? BodyDrainMs,
-        long? ConsumerWaitMs,
-        long? ClientWriteMs,
-        long? ConnectionsOpened,
-        long? ConnectionsReused);
 }
 
 public sealed record StreamTraceSessionSummary(

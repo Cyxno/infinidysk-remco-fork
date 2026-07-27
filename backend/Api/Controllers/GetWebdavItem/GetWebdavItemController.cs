@@ -163,6 +163,7 @@ public class GetWebdavItemController(
             readCts.CancelAfter(configManager.GetStreamingReadTimeout());
             var ct = readCts.Token;
 
+            StreamTraceRangeContext? traceRange = null;
             try
             {
                 await using var response = await GetWebdavItem(request, ct);
@@ -170,7 +171,7 @@ public class GetWebdavItemController(
                     return;
                 var effectiveStart = (long)(HttpContext.Items["effectiveRangeStart"] ?? 0L);
                 var rangeEnd = HttpContext.Items["effectiveRangeEnd"] as long?;
-                streamTrace.RangeOpen(
+                traceRange = streamTrace.RangeOpen(
                     sessionId,
                     request.Item,
                     "GET",
@@ -179,28 +180,29 @@ public class GetWebdavItemController(
                     response.CanSeek ? response.Length : null,
                     Request.Headers.UserAgent.ToString(),
                     HttpContext.Connection.RemoteIpAddress?.ToString());
+                using var traceRangeScope = MultiProviderNntpClient.BeginStreamTraceRangeScope(traceRange);
                 try
                 {
                     // Body transfer can run for minutes; drop the admission/open
                     // deadline and rely on per-segment mid-stream timeouts.
                     readCts.CancelAfter(Timeout.InfiniteTimeSpan);
-                    await CopyAndReportAsync(response, Response.Body, sessionId, effectiveStart, ct);
-                    FinishRange(sessionId, ReadSession.EndReasonCode.Completed);
+                    await CopyAndReportAsync(response, Response.Body, sessionId, effectiveStart, traceRange, ct);
+                    FinishRange(sessionId, traceRange, ReadSession.EndReasonCode.Completed);
                 }
                 catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested)
                 {
-                    FinishRange(sessionId, ReadSession.EndReasonCode.Aborted);
+                    FinishRange(sessionId, traceRange, ReadSession.EndReasonCode.Aborted);
                     throw;
                 }
                 catch (Exception ex)
                 {
-                    FinishRange(sessionId, ReadSession.EndReasonCode.Error, ex.Message);
+                    FinishRange(sessionId, traceRange, ReadSession.EndReasonCode.Error, ex.Message);
                     throw;
                 }
             }
             catch (OperationCanceledException oce) when (!HttpContext.RequestAborted.IsCancellationRequested)
             {
-                FinishRange(sessionId, ReadSession.EndReasonCode.Error, "streaming-read-timeout");
+                FinishRange(sessionId, traceRange, ReadSession.EndReasonCode.Error, "streaming-read-timeout");
                 throw new StreamingReadTimeoutException(
                     "WebDAV /view read exceeded the " +
                     $"{configManager.GetStreamingReadTimeout().TotalSeconds:0}s streaming-read-timeout " +
@@ -214,13 +216,23 @@ public class GetWebdavItemController(
         }
     }
 
-    private void FinishRange(Guid sessionId, ReadSession.EndReasonCode reason, string? message = null)
+    private void FinishRange(
+        Guid sessionId,
+        StreamTraceRangeContext? traceRange,
+        ReadSession.EndReasonCode reason,
+        string? message = null)
     {
         activeReadRegistry.SetEndReason(sessionId, reason);
-        streamTrace.RangeEnd(sessionId, reason, activeReadRegistry.GetBytesRead(sessionId), message);
+        streamTrace.RangeEnd(traceRange, reason, activeReadRegistry.GetBytesRead(sessionId), message);
     }
 
-    private async Task CopyAndReportAsync(Stream src, Stream dest, Guid sessionId, long startOffset, CancellationToken ct)
+    private async Task CopyAndReportAsync(
+        Stream src,
+        Stream dest,
+        Guid sessionId,
+        long startOffset,
+        StreamTraceRangeContext? traceRange,
+        CancellationToken ct)
     {
         // 64 KB chunks; after each write report (bytesRead, absolutePosition)
         // so the Right-Now panel can show real playback location and the
@@ -254,7 +266,7 @@ public class GetWebdavItemController(
             var writeStarted = Stopwatch.GetTimestamp();
             await dest.WriteAsync(buffer, 0, read, ct).ConfigureAwait(false);
             streamTrace.AddStall(
-                sessionId, StreamStallKind.ClientWrite, Stopwatch.GetElapsedTime(writeStarted));
+                traceRange, StreamStallKind.ClientWrite, Stopwatch.GetElapsedTime(writeStarted));
             position += read;
             activeReadRegistry.Touch(sessionId, read, position);
         }

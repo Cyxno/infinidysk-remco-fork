@@ -254,11 +254,12 @@ public class GetAndHeadHandlerPatch : IRequestHandler
                     var sessionId = _activeReadRegistry.GetOrCreate(
                         path, clientKey, fileName, stream.CanSeek ? stream.Length : null,
                         userAgent, clientIp);
-                    _streamTrace.RangeOpen(
+                    var traceRange = _streamTrace.RangeOpen(
                         sessionId, path, request.Method, copyStart, copyEnd,
                         stream.CanSeek ? stream.Length : null, userAgent, clientIp);
                     using var scope = _providerUsageTracker.BeginScope(sessionId);
                     using var metricsScope = MultiProviderNntpClient.BeginReadSessionScope(sessionId);
+                    using var traceRangeScope = MultiProviderNntpClient.BeginStreamTraceRangeScope(traceRange);
                     try
                     {
                         // Body transfer can run for minutes; drop the admission/open
@@ -266,8 +267,8 @@ public class GetAndHeadHandlerPatch : IRequestHandler
                         readCts.CancelAfter(Timeout.InfiniteTimeSpan);
                         await CopyToAsync(stream, response.Body, copyStart, copyEnd,
                             (n, pos) => _activeReadRegistry.Touch(sessionId, n, pos),
-                            sessionId, ct).ConfigureAwait(false);
-                        FinishRange(sessionId, ReadSession.EndReasonCode.Completed);
+                            traceRange, ct).ConfigureAwait(false);
+                        FinishRange(sessionId, traceRange, ReadSession.EndReasonCode.Completed);
                         ClearStreamingFailureAfterCompletedRead(
                             _failureTracker,
                             httpContext.Items["DavItem"],
@@ -279,12 +280,12 @@ public class GetAndHeadHandlerPatch : IRequestHandler
                     }
                     catch (OperationCanceledException) when (httpContext.RequestAborted.IsCancellationRequested)
                     {
-                        FinishRange(sessionId, ReadSession.EndReasonCode.Aborted);
+                        FinishRange(sessionId, traceRange, ReadSession.EndReasonCode.Aborted);
                         throw;
                     }
                     catch (Exception ex)
                     {
-                        FinishRange(sessionId, ReadSession.EndReasonCode.Error, ex.Message);
+                        FinishRange(sessionId, traceRange, ReadSession.EndReasonCode.Error, ex.Message);
                         throw;
                     }
                 }
@@ -343,10 +344,14 @@ public class GetAndHeadHandlerPatch : IRequestHandler
         return null;
     }
 
-    private void FinishRange(Guid sessionId, ReadSession.EndReasonCode reason, string? message = null)
+    private void FinishRange(
+        Guid sessionId,
+        StreamTraceRangeContext? traceRange,
+        ReadSession.EndReasonCode reason,
+        string? message = null)
     {
         _activeReadRegistry.SetEndReason(sessionId, reason);
-        _streamTrace.RangeEnd(sessionId, reason, _activeReadRegistry.GetBytesRead(sessionId), message);
+        _streamTrace.RangeEnd(traceRange, reason, _activeReadRegistry.GetBytesRead(sessionId), message);
     }
 
     private async Task CopyToAsync(
@@ -355,7 +360,7 @@ public class GetAndHeadHandlerPatch : IRequestHandler
         long start,
         long? end,
         Action<long, long>? onBytesServed,
-        Guid? sessionId,
+        StreamTraceRangeContext? traceRange,
         CancellationToken cancellationToken)
     {
         // Skip to the first offset
@@ -392,9 +397,8 @@ public class GetAndHeadHandlerPatch : IRequestHandler
                 var writeStarted = Stopwatch.GetTimestamp();
                 await dest.WriteAsync(
                     buffer.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
-                if (sessionId is { } id)
-                    _streamTrace.AddStall(
-                        id, StreamStallKind.ClientWrite, Stopwatch.GetElapsedTime(writeStarted));
+                _streamTrace.AddStall(
+                    traceRange, StreamStallKind.ClientWrite, Stopwatch.GetElapsedTime(writeStarted));
 
                 // Report chunk size + new absolute file position so dashboards can
                 // surface real playback location (not cumulative transferred bytes).

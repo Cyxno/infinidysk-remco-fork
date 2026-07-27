@@ -753,10 +753,11 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
 
             var capacity = estimate is > 0 and <= int.MaxValue ? (int)estimate : 0;
             buffer = new PooledBufferStream(capacity);
+            var traceRange = MultiProviderNntpClient.CurrentStreamTraceRange;
             var drainStarted = Stopwatch.GetTimestamp();
             await source.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
             StreamTrace.TryStall(
-                MultiProviderNntpClient.CurrentReadSessionId,
+                traceRange,
                 StreamStallKind.BodyDrain,
                 Stopwatch.GetElapsedTime(drainStarted));
             var drained = buffer.Length;
@@ -852,12 +853,13 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                 // Time spent here is the consumer starving: prefetch has not yet delivered
                 // the next segment. Low provider time with high consumer wait means the
                 // pipeline is not running far enough ahead, not that the provider is slow.
+                var traceRange = MultiProviderNntpClient.CurrentStreamTraceRange;
                 var waitStarted = Stopwatch.GetTimestamp();
                 if (!await _streamTasks.Reader.WaitToReadAsync(cancellationToken)) return 0;
                 if (!_streamTasks.Reader.TryRead(out var streamTask)) return 0;
                 var result = await streamTask;
                 StreamTrace.TryStall(
-                    MultiProviderNntpClient.CurrentReadSessionId,
+                    traceRange,
                     StreamStallKind.ConsumerWait,
                     Stopwatch.GetElapsedTime(waitStarted));
                 ReleaseInFlightPrefetchBytes(result.PlannedBytes);

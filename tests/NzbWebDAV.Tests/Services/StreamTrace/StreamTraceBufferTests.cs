@@ -1,3 +1,4 @@
+using System.Text.Json;
 using NzbWebDAV.Database.Models.Metrics;
 using NzbWebDAV.Services.StreamTrace;
 
@@ -12,12 +13,12 @@ public class StreamTraceBufferTests
         var sessionA = Guid.NewGuid();
         var sessionB = Guid.NewGuid();
 
-        buffer.RangeOpen(sessionA, "/view/a.mkv", "GET", 0, 99, 1000, "ua", "127.0.0.1");
+        var rangeA = buffer.RangeOpen(sessionA, "/view/a.mkv", "GET", 0, 99, 1000, "ua", "127.0.0.1");
         buffer.Seek(sessionA, 50);
         buffer.Segment(sessionA, "provider-a", SegmentFetch.FetchStatus.Ok, 12, 0, "msgid@a");
         buffer.RangeOpen(sessionB, "/view/b.mkv", "GET", 0, null, 2000, null, null);
         buffer.ZeroFill(sessionA, "missing@a", 64);
-        buffer.RangeEnd(sessionA, ReadSession.EndReasonCode.Completed, 100);
+        buffer.RangeEnd(rangeA, ReadSession.EndReasonCode.Completed, 100);
         buffer.Failover(sessionB, "p1", "p2", "Missing");
 
         var eventsA = buffer.GetSessionEvents(sessionA);
@@ -33,21 +34,21 @@ public class StreamTraceBufferTests
     }
 
     [Fact]
-    public void RangeEnd_ReportsStallAttributionAndResetsItForTheNextRange()
+    public void RangeEnd_IsolatesStallAttributionPerGeneration()
     {
         var buffer = new StreamTraceBuffer(capacity: 100, maxSessions: 50);
         var session = Guid.NewGuid();
 
-        buffer.RangeOpen(session, "/view/a.mkv", "GET", 0, null, 1000, null, null);
-        buffer.AddStall(session, StreamStallKind.ProviderWait, TimeSpan.FromMilliseconds(120));
-        buffer.AddStall(session, StreamStallKind.BodyDrain, TimeSpan.FromMilliseconds(30));
-        buffer.AddStall(session, StreamStallKind.ConsumerWait, TimeSpan.FromMilliseconds(400));
+        var firstRange = buffer.RangeOpen(session, "/view/a.mkv", "GET", 0, null, 1000, null, null);
+        buffer.AddStall(firstRange, StreamStallKind.ProviderWait, TimeSpan.FromMilliseconds(120));
+        buffer.AddStall(firstRange, StreamStallKind.BodyDrain, TimeSpan.FromMilliseconds(30));
+        buffer.AddStall(firstRange, StreamStallKind.ConsumerWait, TimeSpan.FromMilliseconds(400));
         // Sub-millisecond writes must still accumulate rather than truncate to zero.
         for (var i = 0; i < 10; i++)
-            buffer.AddStall(session, StreamStallKind.ClientWrite, TimeSpan.FromMicroseconds(300));
-        buffer.ConnectionAcquired(session, TimeSpan.FromMilliseconds(70), wasReused: true);
-        buffer.ConnectionAcquired(session, TimeSpan.FromMilliseconds(500), wasReused: false);
-        buffer.RangeEnd(session, ReadSession.EndReasonCode.Aborted, 4096);
+            buffer.AddStall(firstRange, StreamStallKind.ClientWrite, TimeSpan.FromMicroseconds(300));
+        buffer.ConnectionAcquired(firstRange, TimeSpan.FromMilliseconds(70), wasReused: true);
+        buffer.ConnectionAcquired(firstRange, TimeSpan.FromMilliseconds(500), wasReused: false);
+        buffer.RangeEnd(firstRange, ReadSession.EndReasonCode.Aborted, 4096);
 
         var first = buffer.GetSessionEvents(session).Last();
         Assert.Equal(120, first.ProviderWaitMs);
@@ -58,9 +59,9 @@ public class StreamTraceBufferTests
         Assert.Equal(1, first.ConnectionsReused);
         Assert.Equal(1, first.ConnectionsOpened);
 
-        buffer.RangeOpen(session, "/view/a.mkv", "GET", 4096, null, 1000, null, null);
-        buffer.AddStall(session, StreamStallKind.ProviderWait, TimeSpan.FromMilliseconds(15));
-        buffer.RangeEnd(session, ReadSession.EndReasonCode.Completed, 8192);
+        var secondRange = buffer.RangeOpen(session, "/view/a.mkv", "GET", 4096, null, 1000, null, null);
+        buffer.AddStall(secondRange, StreamStallKind.ProviderWait, TimeSpan.FromMilliseconds(15));
+        buffer.RangeEnd(secondRange, ReadSession.EndReasonCode.Completed, 8192);
 
         var second = buffer.GetSessionEvents(session).Last();
         Assert.Equal(15, second.ProviderWaitMs);
@@ -70,18 +71,132 @@ public class StreamTraceBufferTests
     }
 
     [Fact]
-    public void AddStall_BeforeAnyRangeOpen_IsIgnored()
+    public void AddStall_WithoutRangeToken_IsIgnored()
+    {
+        var buffer = new StreamTraceBuffer(capacity: 100, maxSessions: 50);
+
+        // No range has opened, so there is no generation to attribute to. This must not
+        // create a session — otherwise background work would grow the session index forever.
+        buffer.AddStall(null, StreamStallKind.ClientWrite, TimeSpan.FromSeconds(1));
+        buffer.ConnectionAcquired(null, TimeSpan.FromSeconds(1), wasReused: false);
+
+        Assert.Empty(buffer.ListSessions());
+    }
+
+    [Fact]
+    public void LateFetchCompletion_IsNotBilledToTheNextRange()
     {
         var buffer = new StreamTraceBuffer(capacity: 100, maxSessions: 50);
         var session = Guid.NewGuid();
 
-        // No range has opened, so there is no session to attribute to. This must not
-        // create one — otherwise background work would grow the session index forever.
-        buffer.AddStall(session, StreamStallKind.ClientWrite, TimeSpan.FromSeconds(1));
-        buffer.ConnectionAcquired(session, TimeSpan.FromSeconds(1), wasReused: false);
+        var aborted = buffer.RangeOpen(
+            session, "/view/a.mkv", "GET", 0, null, 1_000_000, null, null);
+        buffer.RangeEnd(aborted, ReadSession.EndReasonCode.Aborted, 4096);
 
-        Assert.Empty(buffer.ListSessions());
-        Assert.Empty(buffer.GetSessionEvents(session));
+        var next = buffer.RangeOpen(
+            session, "/view/a.mkv", "GET", 4096, null, 1_000_000, null, null);
+        // Prefetch from the aborted range finally resolves.
+        buffer.AddFetchWait(aborted, TimeSpan.FromMilliseconds(12_580));
+        buffer.AddStall(aborted, StreamStallKind.BodyDrain, TimeSpan.FromMilliseconds(900));
+        buffer.AddFetchWait(next, TimeSpan.FromMilliseconds(15));
+        buffer.RangeEnd(next, ReadSession.EndReasonCode.Completed, 8192);
+
+        var ends = buffer.GetSessionEvents(session)
+            .Where(e => e.Kind == StreamTraceKind.RangeEnd.ToString())
+            .ToList();
+
+        // The already-emitted aborted RangeEnd gains the late totals.
+        Assert.Equal(12_580, ends[0].ProviderWaitMs);
+        Assert.Equal(900, ends[0].BodyDrainMs);
+        Assert.Equal(1, ends[0].Fetches);
+
+        // The next range reports only work that started in that range.
+        Assert.Equal(15, ends[1].ProviderWaitMs);
+        Assert.Null(ends[1].BodyDrainMs);
+        Assert.Equal(1, ends[1].Fetches);
+
+        var jsonl = buffer.FormatEventsJsonl(100);
+        Assert.Contains("\"providerWaitMs\":12580", jsonl);
+        Assert.Contains("\"fetches\":1", jsonl);
+    }
+
+    [Fact]
+    public void RangeEnd_ReportsTheFetchCountAttributedToTheRange()
+    {
+        var buffer = new StreamTraceBuffer(capacity: 100, maxSessions: 50);
+        var session = Guid.NewGuid();
+
+        var range = buffer.RangeOpen(
+            session, "/view/a.mkv", "GET", 0, null, 1_000_000, null, null);
+        buffer.AddFetchWait(range, TimeSpan.FromMilliseconds(100));
+        buffer.AddFetchWait(range, TimeSpan.FromMilliseconds(150));
+        buffer.RangeEnd(range, ReadSession.EndReasonCode.Completed, 8192);
+
+        var end = buffer.GetSessionEvents(session).Last();
+        Assert.Equal(250, end.ProviderWaitMs);
+        Assert.Equal(2, end.Fetches);
+    }
+
+    [Fact]
+    public void OverlappingRangesOnTheSameSession_KeepIndependentTokens()
+    {
+        var buffer = new StreamTraceBuffer(capacity: 100, maxSessions: 50);
+        var session = Guid.NewGuid();
+
+        var first = buffer.RangeOpen(session, "/view/a.mkv", "GET", 0, 99, 1000, null, null);
+        var second = buffer.RangeOpen(session, "/view/a.mkv", "GET", 100, 199, 1000, null, null);
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.NotEqual(first!.Value.Generation, second!.Value.Generation);
+
+        buffer.AddFetchWait(first, TimeSpan.FromMilliseconds(40));
+        buffer.AddFetchWait(second, TimeSpan.FromMilliseconds(90));
+
+        // End in reverse open order.
+        buffer.RangeEnd(second, ReadSession.EndReasonCode.Completed, 100);
+        buffer.RangeEnd(first, ReadSession.EndReasonCode.Aborted, 50);
+
+        var events = buffer.GetSessionEvents(session);
+        var opens = events.Where(e => e.Kind == StreamTraceKind.RangeOpen.ToString()).ToList();
+        var ends = events.Where(e => e.Kind == StreamTraceKind.RangeEnd.ToString()).ToList();
+
+        Assert.Equal(first.Value.Generation, opens[0].RangeGeneration);
+        Assert.Equal(second.Value.Generation, opens[1].RangeGeneration);
+        Assert.Equal(second.Value.Generation, ends[0].RangeGeneration);
+        Assert.Equal(90, ends[0].ProviderWaitMs);
+        Assert.Equal(first.Value.Generation, ends[1].RangeGeneration);
+        Assert.Equal(40, ends[1].ProviderWaitMs);
+
+        var json = JsonSerializer.Serialize(ends[0]);
+        Assert.Contains($"\"rangeGeneration\":{second.Value.Generation}", json);
+    }
+
+    [Fact]
+    public void OldGenerationBeyondRetention_IsDroppedRatherThanChargedToCurrentRange()
+    {
+        var buffer = new StreamTraceBuffer(capacity: 200, maxSessions: 50);
+        var session = Guid.NewGuid();
+
+        var oldest = buffer.RangeOpen(session, "/view/a.mkv", "GET", 0, null, 1000, null, null);
+        buffer.RangeEnd(oldest, ReadSession.EndReasonCode.Aborted, 1);
+
+        for (var i = 0; i < 16; i++)
+        {
+            var mid = buffer.RangeOpen(session, "/view/a.mkv", "GET", i + 1, null, 1000, null, null);
+            buffer.RangeEnd(mid, ReadSession.EndReasonCode.Completed, 1);
+        }
+
+        var current = buffer.RangeOpen(session, "/view/a.mkv", "GET", 100, null, 1000, null, null);
+        buffer.AddFetchWait(oldest, TimeSpan.FromMilliseconds(9999));
+        buffer.AddFetchWait(current, TimeSpan.FromMilliseconds(11));
+        buffer.RangeEnd(current, ReadSession.EndReasonCode.Completed, 2);
+
+        var ends = buffer.GetSessionEvents(session)
+            .Where(e => e.Kind == StreamTraceKind.RangeEnd.ToString())
+            .ToList();
+        var currentEnd = ends.Last(e => e.RangeGeneration == current!.Value.Generation);
+        Assert.Equal(11, currentEnd.ProviderWaitMs);
+        Assert.Null(ends[0].ProviderWaitMs);
     }
 
     [Fact]
@@ -90,11 +205,12 @@ public class StreamTraceBufferTests
         var buffer = new StreamTraceBuffer(100, enabled: false);
         var session = Guid.NewGuid();
 
-        buffer.RangeOpen(session, "/view/a.mkv", "GET", 0, null, 10, null, null);
+        var range = buffer.RangeOpen(session, "/view/a.mkv", "GET", 0, null, 10, null, null);
         buffer.Seek(session, 5);
-        buffer.RangeEnd(session, ReadSession.EndReasonCode.Completed, 10);
+        buffer.RangeEnd(range, ReadSession.EndReasonCode.Completed, 10);
 
         Assert.False(buffer.Enabled);
+        Assert.Null(range);
         Assert.Empty(buffer.GetSessionEvents(session));
         Assert.Empty(buffer.ListSessions());
     }
