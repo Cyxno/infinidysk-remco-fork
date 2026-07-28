@@ -1,6 +1,26 @@
 # NNTP pipelining
 
-NzbDAV uses UsenetSharp batch BODY requests to send multiple NNTP commands on one connection without waiting for each response. Responses are read in order with bounded backpressure.
+Pipelining keeps a Usenet connection busy by asking for the next articles before the previous ones finish arriving. **Depth** is how many asks stay outstanding on that connection (default `8`).
+
+```mermaid
+sequenceDiagram
+  participant NZB as NzbDAV
+  participant Prov as Usenet_provider
+  Note over NZB,Prov: Off_one_at_a_time
+  NZB->>Prov: ask_article_1
+  Prov-->>NZB: article_1
+  NZB->>Prov: ask_article_2
+  Prov-->>NZB: article_2
+  Note over NZB,Prov: On_depth_3_example
+  NZB->>Prov: ask_article_1
+  NZB->>Prov: ask_article_2
+  NZB->>Prov: ask_article_3
+  Prov-->>NZB: article_1
+  Prov-->>NZB: article_2
+  Prov-->>NZB: article_3
+```
+
+Responses still arrive in order; depth is the queue of outstanding asks.
 
 ## Two toggles
 
