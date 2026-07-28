@@ -377,6 +377,10 @@ public class ConfigManager
                     RequireOneOf(item.ConfigName, value, "standard", "enhanced", "deep", "complete");
                     break;
 
+                case ConfigKeys.UsenetMaxQueueConnectionsPreset:
+                    RequireOneOf(item.ConfigName, value, "low", "medium", "high", "max");
+                    break;
+
                 case ConfigKeys.UsenetProviders:
                     RequireValidUsenetProviders(item.ConfigName, value, jsonOptions);
                     break;
@@ -635,9 +639,29 @@ public class ConfigManager
     {
         var pool = Math.Max(1, GetUsenetProviderConfig().TotalPooledConnections);
         var configured = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.UsenetMaxQueueConnections));
-        if (configured is null || !int.TryParse(configured, out var value))
-            return pool;
-        return Math.Clamp(value, 1, pool);
+        if (configured is not null && int.TryParse(configured, out var value))
+            return Math.Clamp(value, 1, pool);
+
+        var fraction = GetMaxQueueConnectionsFraction();
+        return fraction is null ? pool : Math.Max(1, (int)Math.Round(pool * fraction.Value));
+    }
+
+    // Mirrors the per-stream preset: a fraction of the pooled-connection budget
+    // rather than an absolute count, so one setting means the same thing whatever
+    // a user's providers add up to. Null when unset, which keeps the historical
+    // default of "the queue may use the whole pool". Unknown values are rejected
+    // by ValidateConfigItems, so the fall-through only covers hand-edited rows.
+    private double? GetMaxQueueConnectionsFraction()
+    {
+        var preset = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.UsenetMaxQueueConnectionsPreset));
+        return preset?.ToLowerInvariant() switch
+        {
+            "low" => 0.25,
+            "medium" => 0.5,
+            "high" => 0.75,
+            "max" => 1.0,
+            _ => null,
+        };
     }
 
     /// <summary>
