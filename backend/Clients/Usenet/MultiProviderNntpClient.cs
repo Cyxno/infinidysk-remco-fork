@@ -1022,9 +1022,12 @@ public class MultiProviderNntpClient(
                 : byRecovery;
             var byUsage = prioritized.ThenByDescending(x => GetRemainingBytes(x));
             // Prefer providers with more spare capacity. In cascade mode this is a
-            // tie-break after EffectivePriority (which already soft-scores contention);
-            // in pool mode it outranks learned speed so a full pool cannot monopolize.
-            var capacityBalanced = byUsage.ThenByDescending(x => x.UnreservedConnections);
+            // tie-break after EffectivePriority and uses spare *fraction* so unequal
+            // MaxConnections cannot outweigh Priority. In pool mode absolute spare
+            // outranks learned speed so a full pool cannot monopolize.
+            var capacityBalanced = cascade
+                ? byUsage.ThenByDescending(x => x.SpareFraction)
+                : byUsage.ThenByDescending(x => x.UnreservedConnections);
             var ordered = capacityBalanced
                 .ThenBy(EstimatedDeliveryScore)
                 .ToList();
@@ -1036,10 +1039,11 @@ public class MultiProviderNntpClient(
     }
 
     /// <summary>
-    /// Cascade sort key: configured priority, plus a soft contention score while spare
-    /// capacity remains, plus a large demotion when fully saturated. Among providers that
-    /// still have spare connections, a thinly-spared primary can lose to a same-tier peer
-    /// with meaningfully more idle capacity without waiting for hard saturation.
+    /// Cascade sort key: configured priority, plus one priority step when at most 25% of
+    /// the provider's pool remains unreserved, plus a large demotion when fully
+    /// saturated. Absolute spare is not used — that made larger MaxConnections pools
+    /// outrank a healthier Priority-0 primary while idle. Thin-spare still lets a
+    /// Priority-0 pool with 1/8 free yield to an idle Priority-1 peer (#650).
     /// </summary>
     private static int EffectivePriority(MultiConnectionNntpClient provider)
     {
@@ -1047,10 +1051,11 @@ public class MultiProviderNntpClient(
         if (!provider.HasSpareConnection)
             return provider.Priority + saturationDemotion;
 
-        // Smaller UnreservedConnections => slightly worse (still << saturationDemotion).
-        var spare = Math.Clamp(provider.UnreservedConnections, 0, 1024);
-        var contention = 1024 - spare;
-        return provider.Priority + contention;
+        // At most 25% of the configured pool remains unreserved (integer form of
+        // spare/max <= 1/4 so boundary cases like 2/8 do not depend on float rounding).
+        var max = Math.Max(1, provider.MaxConnections);
+        var thinSpareDemotion = provider.UnreservedConnections * 4 <= max ? 1 : 0;
+        return provider.Priority + thinSpareDemotion;
     }
 
     private double EstimatedDeliveryScore(MultiConnectionNntpClient provider)
