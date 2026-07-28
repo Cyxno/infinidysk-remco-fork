@@ -290,11 +290,13 @@ class Program
                 .AddScoped<DatabaseStore>()
                 .AddScoped<IStore, DatabaseStore>()
                 .AddScoped<GetAndHeadHandlerPatch>()
+                .AddScoped<PropFindHandlerPatch>()
                 .AddScoped<SabApiController>()
                 .AddNWebDav(opts =>
                 {
                     opts.Handlers["GET"] = typeof(GetAndHeadHandlerPatch);
                     opts.Handlers["HEAD"] = typeof(GetAndHeadHandlerPatch);
+                    opts.Handlers["PROPFIND"] = typeof(PropFindHandlerPatch);
                     opts.Filter = opts.GetFilter();
                     opts.RequireAuthentication = !WebApplicationAuthExtensions
                         .IsWebdavAuthDisabled();
