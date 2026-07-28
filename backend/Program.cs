@@ -118,22 +118,15 @@ class Program
                 return;
             }
 
-            // initialize database
+            // Keep both database schemas current before config or application services
+            // read them. The stock entrypoint already does this through --db-migration;
+            // direct backend launches use the same progress UI here.
+            var startupCancellationToken = SigtermUtil.GetCancellationToken();
             await using var databaseContext = new DavDatabaseContext();
-            await databaseContext.Database
-                .ExecuteSqlRawAsync(
-                    "PRAGMA journal_mode = WAL;",
-                    SigtermUtil.GetCancellationToken())
+            await using var metricsBootstrap = new MetricsDbContext();
+            await StartupDatabaseMigrator
+                .RunAsync(databaseContext, metricsBootstrap, startupCancellationToken)
                 .ConfigureAwait(false);
-
-            // The metrics database has its own schema and must also be current on
-            // normal startup, where the operational migration runner is skipped.
-            await using (var metricsBootstrap = new MetricsDbContext())
-            {
-                await metricsBootstrap.Database
-                    .MigrateAsync(SigtermUtil.GetCancellationToken())
-                    .ConfigureAwait(false);
-            }
 
             // initialize the config-manager
             var configManager = new ConfigManager();
@@ -404,6 +397,9 @@ class Program
     private static async Task RunDatabaseMigrationsAsync(string[] args)
     {
         var ct = SigtermUtil.GetCancellationToken();
+        await using var maintenanceLease = await DatabaseMigrationLease
+            .AcquireAsync(DavDatabaseContext.DatabaseFilePath, ct)
+            .ConfigureAwait(false);
         var argIndex = args.ToList().IndexOf("--db-migration");
         var targetMigration = args.Length > argIndex + 1 ? args[argIndex + 1] : null;
         var backupStore = new DatabaseBackupStore();
@@ -442,10 +438,16 @@ class Program
             await databaseContext.Database
                 .ExecuteSqlRawAsync("PRAGMA journal_mode = WAL;", ct)
                 .ConfigureAwait(false);
+            await DatabaseStartupGuards
+                .ClearAbandonedMigrationLockAsync(databaseContext, ct)
+                .ConfigureAwait(false);
             Log.Information("Applying database migrations through {Target}", targetMigration);
             await databaseContext.Database.MigrateAsync(targetMigration, ct).ConfigureAwait(false);
             Log.Information("Database migrations completed");
             await using var metricsContext = new MetricsDbContext();
+            await DatabaseStartupGuards
+                .ClearAbandonedMigrationLockAsync(metricsContext, ct)
+                .ConfigureAwait(false);
             await metricsContext.Database.MigrateAsync(ct).ConfigureAwait(false);
             await PerformDatabaseVacuumIfEnabled().ConfigureAwait(false);
             return;
@@ -476,6 +478,9 @@ class Program
             {
                 Log.Information("No pending database migrations");
                 await using var metricsContext = new MetricsDbContext();
+                await DatabaseStartupGuards
+                    .ClearAbandonedMigrationLockAsync(metricsContext, ct)
+                    .ConfigureAwait(false);
                 await metricsContext.Database.MigrateAsync(ct).ConfigureAwait(false);
                 Log.Information("Database migrations completed");
                 return;
@@ -506,6 +511,9 @@ class Program
             await using var databaseContext = new DavDatabaseContext();
             await databaseContext.Database
                 .ExecuteSqlRawAsync("PRAGMA journal_mode = WAL;", ct)
+                .ConfigureAwait(false);
+            await DatabaseStartupGuards
+                .ClearAbandonedMigrationLockAsync(databaseContext, ct)
                 .ConfigureAwait(false);
 
             var pending = (await databaseContext.Database.GetPendingMigrationsAsync(ct).ConfigureAwait(false)).ToList();
@@ -550,6 +558,9 @@ class Program
                 if (step.Id == MigrationProgress.MetricsStepId)
                 {
                     await using var metricsContext = new MetricsDbContext();
+                    await DatabaseStartupGuards
+                        .ClearAbandonedMigrationLockAsync(metricsContext, ct)
+                        .ConfigureAwait(false);
                     await metricsContext.Database.MigrateAsync(ct).ConfigureAwait(false);
                 }
                 else if (step.Id == MigrationProgress.VacuumStepId)
