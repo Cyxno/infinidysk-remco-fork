@@ -112,6 +112,7 @@ public class MultiConnectionNntpClient(
     public void UpdatePriorityOdds(SemaphorePriorityOdds odds) => connectionPool.UpdatePriorityOdds(odds);
 
     private int _pendingSelections;
+    private int _retiredPoolWarningLogged;
     public int PendingSelections => Volatile.Read(ref _pendingSelections);
     public void ReservePending() => Interlocked.Increment(ref _pendingSelections);
     public void ReleasePending() => Interlocked.Decrement(ref _pendingSelections);
@@ -325,6 +326,17 @@ public class MultiConnectionNntpClient(
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
             }
+            catch (NntpClientRetiredException)
+            {
+                deferredCallback.Discard();
+                // Normally this branch is reached while waiting to acquire and the lock is
+                // null. Keep cleanup here for the concurrent-dispose edge where the command
+                // itself observes disposal after acquisition.
+                LogException(() => connectionLock?.Replace());
+                LogException(() => connectionLock?.Dispose());
+                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                throw;
+            }
             catch (Exception e) when (e.TryGetCausingException(out UsenetArticleNotFoundException? _))
             {
                 // Permanently missing / invalid segment ids are not connection failures.
@@ -417,6 +429,11 @@ public class MultiConnectionNntpClient(
             catch (Exception e) when (e.IsCancellationException(ct))
             {
                 LogException(() => connectionLock?.Dispose());
+                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                throw;
+            }
+            catch (NntpClientRetiredException)
+            {
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
             }
@@ -766,12 +783,41 @@ public class MultiConnectionNntpClient(
     {
         var traceRange = MultiProviderNntpClient.CurrentStreamTraceRange;
         var started = Stopwatch.GetTimestamp();
-        var connectionLock = await connectionPool.GetConnectionLockAsync(priority, ct)
-            .ConfigureAwait(false);
+        ConnectionLock<INntpClient> connectionLock;
+        try
+        {
+            connectionLock = await connectionPool.GetConnectionLockAsync(priority, ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception e) when (IsRetiredPoolAcquisitionFailure(e))
+        {
+            throw CreateRetiredPoolException(e);
+        }
         var elapsed = Stopwatch.GetElapsedTime(started);
         latencyTracker?.Record(MetricsKey, LatencyPhase.PoolWait, workload, operation, elapsed);
         StreamTrace.TryConnectionAcquired(traceRange, elapsed, connectionLock.WasReused);
         return connectionLock;
+    }
+
+    /// <summary>
+    /// Pool disposal (client retirement / shutdown) is not a provider-health failure.
+    /// Stale requests must abandon without retrying the same dead pool or feeding the breaker.
+    /// </summary>
+    private bool IsRetiredPoolAcquisitionFailure(Exception e) =>
+        connectionPool.IsDisposed && e is ObjectDisposedException or OperationCanceledException;
+
+    private NntpClientRetiredException CreateRetiredPoolException(Exception inner)
+    {
+        if (Interlocked.Exchange(ref _retiredPoolWarningLogged, 1) == 0)
+        {
+            Log.Warning(
+                "Connection pool for provider {Provider} retired while requests were waiting. " +
+                "Abandoning stale requests without retrying or penalizing provider health.",
+                providerName);
+        }
+        return new NntpClientRetiredException(
+            $"Connection pool for provider '{providerName}' retired while the request was waiting.",
+            inner);
     }
 
     private async Task<UsenetDecodedBodyResponse> RecordSuccessfulResponseAsync(

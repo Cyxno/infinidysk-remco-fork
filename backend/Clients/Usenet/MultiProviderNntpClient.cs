@@ -2,6 +2,7 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using NzbWebDAV.Clients.Usenet.Concurrency;
+using NzbWebDAV.Clients.Usenet.Connections;
 using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Database.Models.Metrics;
@@ -27,7 +28,8 @@ public class MultiProviderNntpClient(
     Func<bool>? retryPrimaryOnMiss = null,
     StreamTraceBuffer? streamTrace = null,
     ActiveReadRegistry? activeReadRegistry = null,
-    ArticleMissNegativeCache? articleMissCache = null
+    ArticleMissNegativeCache? articleMissCache = null,
+    ConnectionPoolStats? connectionPoolStats = null
 ) : NntpClient, INntpConnectionStats
 {
     /// <summary>
@@ -239,6 +241,15 @@ public class MultiProviderNntpClient(
                 }
                 return new UsenetDecodedBodyBatch { Responses = responses };
             }
+            catch (NntpClientRetiredException)
+            {
+                // Every provider in this client belongs to the same retired generation.
+                // Do not walk the remaining disposed pools or record network failures.
+                deferredCallback.Discard();
+                InvokeCompletionCallback(
+                    onConnectionReadyAgain, ArticleBodyResult.NotRetrieved);
+                throw;
+            }
             catch (Exception e) when (e.TryGetCausingException(out UsenetArticleNotFoundException? _))
             {
                 // Invalid / permanently missing segment ids are invalid on every provider.
@@ -298,6 +309,10 @@ public class MultiProviderNntpClient(
             try
             {
                 response = await primaryResponse.ConfigureAwait(false);
+            }
+            catch (NntpClientRetiredException)
+            {
+                throw;
             }
             catch (Exception e) when (!e.IsCancellationException(cancellationToken))
             {
@@ -443,6 +458,13 @@ public class MultiProviderNntpClient(
                         }
 
                         lastException = null;
+                    }
+                    catch (NntpClientRetiredException)
+                    {
+                        // The whole provider set belongs to the retired generation.
+                        deferredCallback.Discard();
+                        coordinator.CompleteAttempt();
+                        throw;
                     }
                     catch (Exception e) when (!e.IsCancellationException(cancellationToken))
                     {
@@ -650,6 +672,13 @@ public class MultiProviderNntpClient(
                     onConnectionReadyAgain, ArticleBodyResult.NotRetrieved);
                 return result;
             }
+            catch (NntpClientRetiredException)
+            {
+                deferredCallback.Discard();
+                InvokeCompletionCallback(
+                    onConnectionReadyAgain, ArticleBodyResult.NotRetrieved);
+                throw;
+            }
             catch (Exception e) when (!e.IsCancellationException(cancellationToken))
             {
                 stopwatch.Stop();
@@ -785,6 +814,10 @@ public class MultiProviderNntpClient(
                 // matches StatsPipelinedAsync which records nothing).
 
                 return result;
+            }
+            catch (NntpClientRetiredException)
+            {
+                throw;
             }
             catch (Exception e) when (!e.IsCancellationException(cancellationToken))
             {
@@ -1161,9 +1194,12 @@ public class MultiProviderNntpClient(
 
     public override void Dispose()
     {
+        connectionPoolStats?.Deactivate();
         foreach (var provider in providers)
             provider.Dispose();
         _batchFallbackStartGate.Dispose();
         GC.SuppressFinalize(this);
     }
+
+    internal override void Retire() => connectionPoolStats?.Deactivate();
 }

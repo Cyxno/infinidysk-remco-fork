@@ -104,6 +104,48 @@ public class ConnectionPoolPriorityTests
         await DrainAsync([secondHigh]);
     }
 
+    [Fact]
+    public async Task Dispose_StopsPublishingConnectionCountEvents()
+    {
+        var events = 0;
+        await using var pool = CreatePool(maxConnections: 1);
+        pool.OnConnectionPoolChanged += (_, _) => Interlocked.Increment(ref events);
+
+        var borrowed = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        var beforeDispose = Volatile.Read(ref events);
+        Assert.True(beforeDispose > 0);
+
+        await pool.DisposeAsync();
+        borrowed.Dispose();
+        await Task.Delay(50);
+
+        Assert.Equal(beforeDispose, Volatile.Read(ref events));
+    }
+
+    [Fact]
+    public async Task Dispose_DuringConnectionFactory_DiscardsLateConnection()
+    {
+        var factoryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFactory = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new DisposableProbe();
+        var pool = new ConnectionPool<DisposableProbe>(
+            maxConnections: 1,
+            async _ =>
+            {
+                factoryEntered.SetResult();
+                await releaseFactory.Task;
+                return connection;
+            });
+
+        var acquisition = pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        await factoryEntered.Task.WaitAsync(WaitBudget);
+        await pool.DisposeAsync();
+        releaseFactory.SetResult();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => acquisition);
+        Assert.True(connection.IsDisposed);
+    }
+
     /// <summary>
     /// Saturates a one-connection pool, queues waiters in both lanes, then releases
     /// <paramref name="releases"/> times and reports which lane won each admission.
@@ -174,5 +216,12 @@ public class ConnectionPoolPriorityTests
                 // expected: the pool may retire waiters when it is disposed.
             }
         }
+    }
+
+    private sealed class DisposableProbe : IDisposable
+    {
+        public bool IsDisposed { get; private set; }
+
+        public void Dispose() => IsDisposed = true;
     }
 }

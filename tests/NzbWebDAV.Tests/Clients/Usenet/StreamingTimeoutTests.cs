@@ -5,6 +5,7 @@ using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Clients.Usenet.Connections;
 using NzbWebDAV.Clients.Usenet.Contexts;
 using NzbWebDAV.Clients.Usenet.Models;
+using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models;
 using NzbWebDAV.Streams;
@@ -16,6 +17,178 @@ namespace NzbWebDAV.Tests.Clients.Usenet;
 
 public class StreamingTimeoutTests
 {
+    [Fact]
+    public async Task RunWithConnection_DisposedPool_DoesNotRetryOrPenalizeProvider()
+    {
+        var breaker = new ProviderCircuitBreaker("retired-pool");
+        var created = 0;
+        var pool = new ConnectionPool<INntpClient>(
+            maxConnections: 1,
+            _ =>
+            {
+                Interlocked.Increment(ref created);
+                return ValueTask.FromResult<INntpClient>(new HangingNntpClient());
+            });
+        using var client = new MultiConnectionNntpClient(
+            pool, ProviderType.Pooled, breaker, "retired-pool");
+        using var heldConnection = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+
+        var callbacks = 0;
+        ArticleBodyResult? callbackResult = null;
+        var request = client.DecodedBodyAsync(
+            "seg",
+            result =>
+            {
+                callbackResult = result;
+                Interlocked.Increment(ref callbacks);
+            },
+            CancellationToken.None);
+        await Task.Delay(50);
+
+        await pool.DisposeAsync();
+
+        var exception = await Assert.ThrowsAsync<NntpClientRetiredException>(() => request);
+        Assert.IsAssignableFrom<OperationCanceledException>(exception.InnerException);
+        Assert.Equal(1, created);
+        Assert.Equal(1, callbacks);
+        Assert.Equal(ArticleBodyResult.NotRetrieved, callbackResult);
+        Assert.Equal(0, breaker.GetSnapshot().FailureCount);
+    }
+
+    [Fact]
+    public async Task DecodedBodiesAsync_DisposedPool_DoesNotRetryOrPenalizeProvider()
+    {
+        var breaker = new ProviderCircuitBreaker("retired-batch-pool");
+        var created = 0;
+        var pool = new ConnectionPool<INntpClient>(
+            maxConnections: 1,
+            _ =>
+            {
+                Interlocked.Increment(ref created);
+                return ValueTask.FromResult<INntpClient>(new HangingNntpClient());
+            });
+        using var client = new MultiConnectionNntpClient(
+            pool, ProviderType.Pooled, breaker, "retired-batch-pool");
+        using var heldConnection = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+
+        var callbacks = 0;
+        ArticleBodyResult? callbackResult = null;
+        var request = client.DecodedBodiesAsync(
+            ["seg-a", "seg-b"],
+            result =>
+            {
+                callbackResult = result;
+                Interlocked.Increment(ref callbacks);
+            },
+            CancellationToken.None);
+        await Task.Delay(50);
+
+        await pool.DisposeAsync();
+
+        var exception = await Assert.ThrowsAsync<NntpClientRetiredException>(() => request);
+        Assert.IsAssignableFrom<OperationCanceledException>(exception.InnerException);
+        Assert.Equal(1, created);
+        Assert.Equal(1, callbacks);
+        Assert.Equal(ArticleBodyResult.NotRetrieved, callbackResult);
+        Assert.Equal(0, breaker.GetSnapshot().FailureCount);
+    }
+
+    [Fact]
+    public async Task RunWithConnection_AlreadyDisposedPool_TranslatesObjectDisposedException()
+    {
+        var breaker = new ProviderCircuitBreaker("already-retired-pool");
+        var pool = new ConnectionPool<INntpClient>(
+            maxConnections: 1,
+            _ => ValueTask.FromResult<INntpClient>(new HangingNntpClient()));
+        using var client = new MultiConnectionNntpClient(
+            pool, ProviderType.Pooled, breaker, "already-retired-pool");
+        await pool.DisposeAsync();
+
+        ArticleBodyResult? callbackResult = null;
+        var exception = await Assert.ThrowsAsync<NntpClientRetiredException>(() =>
+            client.DecodedBodyAsync(
+                "seg",
+                result => callbackResult = result,
+                CancellationToken.None));
+
+        Assert.IsAssignableFrom<ObjectDisposedException>(exception.InnerException);
+        Assert.Equal(ArticleBodyResult.NotRetrieved, callbackResult);
+        Assert.Equal(0, breaker.GetSnapshot().FailureCount);
+    }
+
+    [Fact]
+    public async Task MultiProvider_RetiredGeneration_DoesNotTryNextProvider()
+    {
+        var retiredBreaker = new ProviderCircuitBreaker("retired-primary");
+        var retiredPool = new ConnectionPool<INntpClient>(
+            maxConnections: 1,
+            _ => ValueTask.FromResult<INntpClient>(new HangingNntpClient()));
+        var retired = new MultiConnectionNntpClient(
+            retiredPool, ProviderType.Pooled, retiredBreaker, "retired-primary", priority: 0);
+        await retiredPool.DisposeAsync();
+
+        var fallbackCreated = 0;
+        var fallbackPool = new ConnectionPool<INntpClient>(
+            maxConnections: 1,
+            _ =>
+            {
+                Interlocked.Increment(ref fallbackCreated);
+                return ValueTask.FromResult<INntpClient>(
+                    new HealthyNntpClient(new Dictionary<string, byte[]>
+                    {
+                        ["seg"] = [1, 2, 3, 4],
+                    }));
+            });
+        var fallback = new MultiConnectionNntpClient(
+            fallbackPool,
+            ProviderType.Pooled,
+            new ProviderCircuitBreaker("fallback"),
+            "fallback",
+            priority: 1);
+        using var client = new MultiProviderNntpClient([retired, fallback]);
+
+        var callbacks = 0;
+        ArticleBodyResult? callbackResult = null;
+        await Assert.ThrowsAsync<NntpClientRetiredException>(() =>
+            client.DecodedBodyAsync(
+                "seg",
+                result =>
+                {
+                    callbackResult = result;
+                    Interlocked.Increment(ref callbacks);
+                },
+                CancellationToken.None));
+
+        Assert.Equal(0, fallbackCreated);
+        Assert.Equal(1, callbacks);
+        Assert.Equal(ArticleBodyResult.NotRetrieved, callbackResult);
+        Assert.Equal(0, retiredBreaker.GetSnapshot().FailureCount);
+    }
+
+    [Fact]
+    public async Task PipelinedBody_AlreadyDisposedPool_ThrowsRetiredGenerationException()
+    {
+        var breaker = new ProviderCircuitBreaker("retired-pipeline");
+        var pool = new ConnectionPool<INntpClient>(
+            maxConnections: 1,
+            _ => ValueTask.FromResult<INntpClient>(new HangingNntpClient()));
+        using var client = new MultiConnectionNntpClient(
+            pool, ProviderType.Pooled, breaker, "retired-pipeline");
+        await pool.DisposeAsync();
+
+        async Task EnumerateAsync()
+        {
+            await foreach (var _ in client.DecodedBodiesPipelinedAsync(
+                               ["seg"], depth: 1, CancellationToken.None))
+            {
+            }
+        }
+
+        var exception = await Assert.ThrowsAsync<NntpClientRetiredException>(EnumerateAsync);
+        Assert.IsAssignableFrom<ObjectDisposedException>(exception.InnerException);
+        Assert.Equal(0, breaker.GetSnapshot().FailureCount);
+    }
+
     [Fact]
     public async Task RunWithConnection_WithStreamingTimeout_FailsFastAndRetriesOnFreshConnection()
     {

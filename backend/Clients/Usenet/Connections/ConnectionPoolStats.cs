@@ -21,9 +21,12 @@ public class ConnectionPoolStats
     private int _totalLive;
     private int _totalIdle;
     private int _flushScheduled; // 0 == false, 1 == true
+    private int _active = 1;
     private readonly Lock _lock = new();
     private readonly UsenetProviderConfig _providerConfig;
     private readonly WebsocketManager _websocketManager;
+
+    internal bool IsActive => Volatile.Read(ref _active) == 1;
 
     public ConnectionPoolStats(UsenetProviderConfig providerConfig, WebsocketManager websocketManager)
     {
@@ -48,8 +51,14 @@ public class ConnectionPoolStats
 
         void OnEvent(object? _, ConnectionPoolChangedEventArgs args)
         {
+            if (Volatile.Read(ref _active) == 0)
+                return;
+
             lock (_lock)
             {
+                if (_active == 0)
+                    return;
+
                 _latestLive[providerIndex] = args.Live;
                 _latestIdle[providerIndex] = args.Idle;
                 _dirty[providerIndex] = true;
@@ -76,20 +85,36 @@ public class ConnectionPoolStats
         // so events arriving after the snapshot are never lost.
         Volatile.Write(ref _flushScheduled, 0);
 
-        List<string> messages;
         lock (_lock)
         {
-            messages = new List<string>();
+            // Publish while holding the same lock used by Deactivate(). SendMessage is
+            // synchronous, so once Deactivate returns no stale flush can still win the
+            // last-message race against the replacement generation.
+            if (_active == 0)
+                return;
+
             for (var i = 0; i < _dirty.Length; i++)
             {
                 if (!_dirty[i]) continue;
                 _dirty[i] = false;
-                messages.Add($"{i}|{_latestLive[i]}|{_latestIdle[i]}|{_totalLive}|{_max}|{_totalIdle}");
+                var message =
+                    $"{i}|{_latestLive[i]}|{_latestIdle[i]}|{_totalLive}|{_max}|{_totalIdle}";
+                _ = _websocketManager.SendMessage(WebsocketTopic.UsenetConnections, message);
             }
         }
+    }
 
-        foreach (var message in messages)
-            _ = _websocketManager.SendMessage(WebsocketTopic.UsenetConnections, message);
+    /// <summary>
+    /// Stops a retired client generation from overwriting connection totals published by
+    /// its replacement while its existing streams finish draining.
+    /// </summary>
+    internal void Deactivate()
+    {
+        lock (_lock)
+        {
+            _active = 0;
+            Array.Clear(_dirty);
+        }
     }
 
     public sealed class ConnectionPoolChangedEventArgs(int live, int idle, int max) : EventArgs

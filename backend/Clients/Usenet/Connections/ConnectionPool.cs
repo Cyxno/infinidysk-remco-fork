@@ -51,6 +51,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     public int IdleConnections => _idleConnections.Count;
     public int ActiveConnections => _live - _idleConnections.Count;
     public int AvailableConnections => _maxConnections - ActiveConnections;
+    internal bool IsDisposed => Volatile.Read(ref _disposed) == 1;
 
     public event EventHandler<ConnectionPoolStats.ConnectionPoolChangedEventArgs>? OnConnectionPoolChanged;
 
@@ -64,6 +65,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private readonly SemaphoreSlim _handshakeGate = new(MaxConcurrentHandshakes, MaxConcurrentHandshakes);
     private readonly CancellationTokenSource _sweepCts = new();
     private readonly Task _sweeperTask; // keeps timer alive
+    private readonly Lock _lifecycleLock = new();
 
     private int _live; // number of connections currently alive
     private int _disposed; // 0 == false, 1 == true
@@ -139,19 +141,23 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         await _gate.WaitAsync(priority, linked.Token).ConfigureAwait(false);
         Interlocked.Add(ref _gateWaitTicks, Stopwatch.GetElapsedTime(gateWaitStarted).Ticks);
 
-        // Pool might have been disposed after wait returned:
-        if (Volatile.Read(ref _disposed) == 1)
+        // Claim an idle connection atomically with respect to disposal. Once popped,
+        // it is active and disposal leaves it for the borrower to return or destroy.
+        T? reused = default;
+        var reusedConnection = false;
+        lock (_lifecycleLock)
         {
-            _gate.Release();
-            ThrowDisposed();
-        }
+            if (_disposed == 1)
+                ThrowDisposed();
 
-        // Try to reuse an existing idle connection.
-        if (TryTakeIdleConnection(out var reused))
+            reusedConnection = TryTakeIdleConnection(out reused!);
+            if (reusedConnection)
+                Interlocked.Increment(ref _connectionsReused);
+        }
+        if (reusedConnection)
         {
-            Interlocked.Increment(ref _connectionsReused);
             TriggerConnectionPoolChangedEvent();
-            return BuildLock(reused, wasReused: true);
+            return BuildLock(reused!, wasReused: true);
         }
 
         // Need a fresh connection. Pace handshakes so a cold burst of borrowers
@@ -165,23 +171,27 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         }
         catch
         {
-            _gate.Release();
+            ReleaseGateIfActive();
             throw;
         }
 
         try
         {
-            if (Volatile.Read(ref _disposed) == 1)
+            reused = default;
+            reusedConnection = false;
+            lock (_lifecycleLock)
             {
-                _gate.Release();
-                ThrowDisposed();
-            }
+                if (_disposed == 1)
+                    ThrowDisposed();
 
-            if (TryTakeIdleConnection(out reused))
+                reusedConnection = TryTakeIdleConnection(out reused!);
+                if (reusedConnection)
+                    Interlocked.Increment(ref _connectionsReused);
+            }
+            if (reusedConnection)
             {
-                Interlocked.Increment(ref _connectionsReused);
                 TriggerConnectionPoolChangedEvent();
-                return BuildLock(reused, wasReused: true);
+                return BuildLock(reused!, wasReused: true);
             }
 
             T conn;
@@ -192,18 +202,40 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             catch
             {
                 Interlocked.Increment(ref _handshakeFailures);
-                _gate.Release(); // free the permit on failure
+                ReleaseGateIfActive(); // free the permit on failure
                 throw;
             }
 
-            Interlocked.Increment(ref _connectionsOpened);
-            Interlocked.Increment(ref _live);
+            var disposeConnection = false;
+            lock (_lifecycleLock)
+            {
+                if (_disposed == 1)
+                {
+                    disposeConnection = true;
+                }
+                else
+                {
+                    Interlocked.Increment(ref _connectionsOpened);
+                    Interlocked.Increment(ref _live);
+                }
+            }
+
+            if (disposeConnection)
+            {
+                DisposeConnection(conn);
+                ThrowDisposed();
+            }
+
             TriggerConnectionPoolChangedEvent();
             return BuildLock(conn, wasReused: false);
         }
         finally
         {
-            _handshakeGate.Release();
+            lock (_lifecycleLock)
+            {
+                if (_disposed == 0)
+                    _handshakeGate.Release();
+            }
         }
 
         ConnectionLock<T> BuildLock(T c, bool wasReused)
@@ -211,6 +243,15 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
         static void ThrowDisposed()
             => throw new ObjectDisposedException(nameof(ConnectionPool<T>));
+    }
+
+    private void ReleaseGateIfActive()
+    {
+        lock (_lifecycleLock)
+        {
+            if (_disposed == 0)
+                _gate.Release();
+        }
     }
 
     private bool TryTakeIdleConnection(out T connection)
@@ -248,35 +289,54 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
     private void Return(T connection)
     {
-        if (Volatile.Read(ref _disposed) == 1)
+        var disposeConnection = false;
+        var notify = false;
+        lock (_lifecycleLock)
         {
-            DisposeConnection(connection);
-            Interlocked.Decrement(ref _live);
-            TriggerConnectionPoolChangedEvent();
-            return;
+            if (_disposed == 1)
+            {
+                Interlocked.Decrement(ref _live);
+                disposeConnection = true;
+            }
+            else
+            {
+                _idleConnections.Push(new Pooled(connection, Environment.TickCount64));
+                _gate.Release();
+                notify = true;
+            }
         }
 
-        _idleConnections.Push(new Pooled(connection, Environment.TickCount64));
-        _gate.Release();
-        TriggerConnectionPoolChangedEvent();
+        if (disposeConnection)
+            DisposeConnection(connection);
+        if (notify)
+            TriggerConnectionPoolChangedEvent();
     }
 
     private void Destroy(T connection)
     {
         // When a lock requests replacement, we dispose the connection instead of reusing.
         DisposeConnection(connection);
-        Interlocked.Decrement(ref _live);
-        Interlocked.Increment(ref _connectionsDestroyed);
-        if (Volatile.Read(ref _disposed) == 0)
+        var notify = false;
+        lock (_lifecycleLock)
         {
-            _gate.Release();
+            Interlocked.Decrement(ref _live);
+            Interlocked.Increment(ref _connectionsDestroyed);
+            if (_disposed == 0)
+            {
+                _gate.Release();
+                notify = true;
+            }
         }
 
-        TriggerConnectionPoolChangedEvent();
+        if (notify)
+            TriggerConnectionPoolChangedEvent();
     }
 
     private void TriggerConnectionPoolChangedEvent()
     {
+        if (Volatile.Read(ref _disposed) == 1)
+            return;
+
         OnConnectionPoolChanged?.Invoke(this, new ConnectionPoolStats.ConnectionPoolChangedEventArgs(
             _live,
             _idleConnections.Count,
@@ -340,7 +400,15 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) == 1) return;
+        lock (_lifecycleLock)
+        {
+            if (_disposed == 1) return;
+            _disposed = 1;
+
+            // Drop handlers before draining so late Return/Destroy from in-flight locks
+            // cannot overwrite the live generation's connection-count websocket updates.
+            OnConnectionPoolChanged = null;
+        }
 
         await _sweepCts.CancelAsync();
 
@@ -357,9 +425,12 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         while (_idleConnections.TryPop(out var item))
             DisposeConnection(item.Connection);
 
-        _sweepCts.Dispose();
-        _gate.Dispose();
-        _handshakeGate.Dispose();
+        lock (_lifecycleLock)
+        {
+            _sweepCts.Dispose();
+            _gate.Dispose();
+            _handshakeGate.Dispose();
+        }
         GC.SuppressFinalize(this);
     }
 
