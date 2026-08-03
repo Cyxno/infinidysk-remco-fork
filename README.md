@@ -38,14 +38,15 @@ Read the full story in the [about page](https://nzbdav.com/community/about/).
 
 ## Special thanks
 
-Special thanks to the forks and contributors whose ideas we absorbed:
+Special thanks to the forks and contributors whose ideas we consolidated:
 
 * [@Nzbdav-dev](https://github.com/Nzbdav-dev)
 * [@Pukabyte](https://github.com/Pukabyte)
 * [@elfhosted](https://github.com/elfhosted)
 * [@kha-kis](https://github.com/kha-kis)
 * [@mrghxst](https://github.com/mrghxst)
-* [qooode/nzbdavex](https://github.com/qooode/nzbdavex)
+* [@qooode](https://github.com/qooode)
+* [@dgherman](https://github.com/dgherman)
 
 ## Features
 
