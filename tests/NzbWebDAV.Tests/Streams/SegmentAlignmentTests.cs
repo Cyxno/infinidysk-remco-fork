@@ -34,21 +34,23 @@ public class SegmentAlignmentTests
         Assert.Contains("two", client.IndividualRequests);
     }
 
-    [Fact]
-    public async Task ExhaustedRetries_ZeroFillExactlyOneSegment_KeepingFollowingOffsets()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ExhaustedRetries_ThrowsRetryableDownloadException(bool usePipelinedBodyRequests)
     {
         var client = CreateClient();
         client.BatchFailures["two"] = int.MaxValue;
         client.IndividualFailures["two"] = int.MaxValue;
 
-        await using var stream = CreateStream(client, exactSizes: [5, 7, 5]);
-        var output = await ReadAllAsync(stream);
+        await using var stream = CreateStream(client, exactSizes: [5, 7, 5],
+            usePipelinedBodyRequests: usePipelinedBodyRequests);
 
-        // The middle segment is 7 bytes, not the 5.66-byte average of this file.
-        Assert.Equal(17, output.Length);
-        Assert.Equal("aaaaa", Encoding.ASCII.GetString(output, 0, 5));
-        Assert.Equal(new byte[7], output[5..12]);
-        Assert.Equal("ccccc", Encoding.ASCII.GetString(output, 12, 5));
+        var failure = await Assert.ThrowsAsync<TransientSegmentExhaustionException>(
+            () => ReadAllAsync(stream));
+
+        Assert.Contains("two", failure.Message, StringComparison.Ordinal);
+        Assert.IsType<TimeoutException>(failure.InnerException);
     }
 
     [Fact]
@@ -104,6 +106,68 @@ public class SegmentAlignmentTests
         Assert.Equal(15, output.Length);
         Assert.Equal(new byte[5], output[5..10]);
         Assert.Equal("ccccc", Encoding.ASCII.GetString(output, 10, 5));
+    }
+
+    [Fact]
+    public async Task BatchFailure_RescueConfirmsMissing_GapFillsInsteadOfThrowing()
+    {
+        var client = CreateClient(new Dictionary<string, byte[]>
+        {
+            ["one"] = First,
+            ["three"] = Third,
+        });
+        client.BatchFailures["two"] = 1;
+
+        await using var stream = MultiSegmentStream.Create(
+            new[] { "one", "two", "three" }.AsMemory(),
+            client,
+            articleBufferSize: 4,
+            estimatedSegmentSize: 6,
+            failFastOnFirstSegment: false,
+            usePipelinedBodyRequests: true,
+            cancellationToken: CancellationToken.None,
+            fileName: "alignment.bin",
+            exactSegmentSizes: new long[] { 5, 7, 5 });
+
+        var output = await ReadAllAsync(stream);
+
+        Assert.Equal(17, output.Length);
+        Assert.Equal("aaaaa", Encoding.ASCII.GetString(output, 0, 5));
+        Assert.Equal(new byte[7], output[5..12]);
+        Assert.Equal("ccccc", Encoding.ASCII.GetString(output, 12, 5));
+    }
+
+    [Fact]
+    public async Task ContainerAwareFill_UsesAlignedTsNullPacketWithoutChangingFollowingOffsets()
+    {
+        var firstPacket = Enumerable.Repeat((byte)'a', 188).ToArray();
+        var thirdPacket = Enumerable.Repeat((byte)'c', 188).ToArray();
+        var client = CreateClient(new Dictionary<string, byte[]>
+        {
+            ["one"] = firstPacket,
+            ["three"] = thirdPacket,
+        });
+
+        await using var stream = MultiSegmentStream.Create(
+            new[] { "one", "two", "three" }.AsMemory(),
+            client,
+            articleBufferSize: 4,
+            estimatedSegmentSize: 188,
+            failFastOnFirstSegment: false,
+            usePipelinedBodyRequests: true,
+            cancellationToken: CancellationToken.None,
+            fileName: "movie.ts",
+            exactSegmentSizes: new long[] { 188, 188, 188 },
+            useContainerAwareFill: true,
+            firstSegmentFileOffset: 0);
+
+        var output = await ReadAllAsync(stream);
+
+        Assert.Equal(564, output.Length);
+        Assert.Equal(firstPacket, output[..188]);
+        Assert.Equal(new byte[] { 0x47, 0x1F, 0xFF, 0x10 }, output[188..192]);
+        Assert.All(output[192..376], value => Assert.Equal(0xFF, value));
+        Assert.Equal(thirdPacket, output[376..]);
     }
 
     [Fact]
@@ -271,14 +335,15 @@ public class SegmentAlignmentTests
         Assert.Equal(readBudget, total);
     }
 
-    private static Stream CreateStream(ScriptedNntpClient client, long[] exactSizes) =>
+    private static Stream CreateStream(
+        ScriptedNntpClient client, long[] exactSizes, bool usePipelinedBodyRequests = true) =>
         MultiSegmentStream.Create(
             new[] { "one", "two", "three" }.AsMemory(),
             client,
             articleBufferSize: 4,
             estimatedSegmentSize: 6,
             failFastOnFirstSegment: false,
-            usePipelinedBodyRequests: true,
+            usePipelinedBodyRequests: usePipelinedBodyRequests,
             cancellationToken: CancellationToken.None,
             fileName: "alignment.bin",
             exactSegmentSizes: exactSizes);
