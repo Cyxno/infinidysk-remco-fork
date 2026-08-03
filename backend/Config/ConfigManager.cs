@@ -274,6 +274,11 @@ public class ConfigManager
 
             switch (item.ConfigName)
             {
+                case ConfigKeys.QueueMaxItems:
+                case ConfigKeys.QueueResumeThreshold:
+                    RequireNonNegativeInt(item.ConfigName, value);
+                    break;
+
                 case ConfigKeys.UsenetMaxDownloadConnections:
                 case ConfigKeys.UsenetMaxQueueConnections:
                 case ConfigKeys.QueueWorkerCount:
@@ -377,6 +382,10 @@ public class ConfigManager
                     RequireOneOf(item.ConfigName, value, "standard", "enhanced", "deep", "complete");
                     break;
 
+                case ConfigKeys.ApiArticleExistenceCheckMode:
+                    RequireOneOf(item.ConfigName, value, "full", "sampled");
+                    break;
+
                 case ConfigKeys.UsenetMaxQueueConnectionsPreset:
                     RequireOneOf(item.ConfigName, value, "low", "medium", "high", "max");
                     break;
@@ -405,6 +414,13 @@ public class ConfigManager
         {
             if (!long.TryParse(value, out _))
                 throw new ArgumentException($"Config value for '{key}' must be a whole number, but was '{value}'.");
+        }
+
+        static void RequireNonNegativeInt(string key, string value)
+        {
+            if (!int.TryParse(value, out var parsed) || parsed < 0)
+                throw new ArgumentException(
+                    $"Config value for '{key}' must be a non-negative whole number, but was '{value}'.");
         }
 
         static void RequireBool(string key, string value)
@@ -677,6 +693,48 @@ public class ConfigManager
         return Math.Clamp(value, 1, 4);
     }
 
+    public int GetQueueMaxItems()
+    {
+        var configured = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.QueueMaxItems));
+        return configured is not null && int.TryParse(configured, out var value)
+            ? Math.Max(0, value)
+            : 0;
+    }
+
+    public int GetQueueResumeThreshold()
+    {
+        var maxItems = GetQueueMaxItems();
+        if (maxItems == 0) return 0;
+
+        var configured = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.QueueResumeThreshold));
+        if (configured is null || !int.TryParse(configured, out var value) || value <= 0)
+            return maxItems;
+        return Math.Min(value, maxItems);
+    }
+
+    public void ValidateQueueAdmissionSettings(IEnumerable<ConfigItem> updates)
+    {
+        var patch = updates.ToDictionary(x => x.ConfigName, x => x.ConfigValue);
+        var maxItems = ParsePatchedValue(ConfigKeys.QueueMaxItems, GetQueueMaxItems());
+        var resumeThreshold = ParsePatchedValue(
+            ConfigKeys.QueueResumeThreshold,
+            GetQueueResumeThreshold());
+
+        if (maxItems > 0 && resumeThreshold > maxItems)
+            throw new ArgumentException(
+                $"Config value for '{ConfigKeys.QueueResumeThreshold}' must be less than or equal to " +
+                $"'{ConfigKeys.QueueMaxItems}'.");
+
+        return;
+
+        int ParsePatchedValue(string key, int fallback)
+        {
+            if (!patch.TryGetValue(key, out var raw) || string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            return int.TryParse(raw, out var parsed) ? parsed : fallback;
+        }
+    }
+
     /// <summary>
     /// SAB-compatible queue pause state (<c>mode=pause</c> / <c>mode=resume</c>).
     /// Blocks the queue coordinator from starting new downloads; items already
@@ -878,6 +936,12 @@ public class ConfigManager
             .Select(x => x.ToLower())
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .ToHashSet();
+    }
+
+    public string GetArticleExistenceCheckMode()
+    {
+        var configured = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.ApiArticleExistenceCheckMode));
+        return configured?.ToLowerInvariant() == "sampled" ? "sampled" : "full";
     }
 
     public bool IsPlaybackWatchdogEnabled()
