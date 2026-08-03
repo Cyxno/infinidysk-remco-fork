@@ -342,6 +342,7 @@ public class ConfigManager
                     break;
 
                 case ConfigKeys.ApiEnsureImportableVideo:
+                case ConfigKeys.ApiSampleFilterEnabled:
                 case ConfigKeys.ApiIgnoreHistoryLimit:
                 case ConfigKeys.ApiLazyRarParsing:
                 case ConfigKeys.ApiNzbBackupEnabled:
@@ -796,13 +797,16 @@ public class ConfigManager
 
     /// <summary>
     /// Host-wide cap on decoded article bytes retained in RAM across concurrent WebDAV
-    /// streams. Default 512 MiB; clamped to [64, 8192]. Distinct from
+    /// streams. When unset, derived from the process heap limit (25%, clamped [64, 512]).
+    /// Explicit values keep the existing [64, 8192] clamp. Distinct from
     /// <see cref="GetArticleBufferSize"/>, which bounds per-stream segment count.
     /// </summary>
     public int GetInFlightArticleBudgetMb()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.UsenetInFlightArticleBudgetMb));
-        return int.TryParse(v, out var n) ? Math.Clamp(n, 64, 8192) : 512;
+        return int.TryParse(v, out var n)
+            ? Math.Clamp(n, 64, 8192)
+            : MemoryBudget.DefaultInFlightArticleBudgetMb();
     }
 
     public long GetInFlightArticleBudgetBytes() =>
@@ -1541,13 +1545,22 @@ public class ConfigManager
 
     public HashSet<string> GetBlocklistedFiles()
     {
-        var defaultValue = "*.nfo, *.par2, *.sfv, *sample.mkv, *unpack.mkv, *.unpack.mp4";
+        // *sample.mkv is intentionally omitted: sample detection is handled by
+        // IsSampleFilterEnabled / FileFilterUtil (name + size ratio).
+        var defaultValue = "*.nfo, *.par2, *.sfv, *unpack.mkv, *.unpack.mp4";
         return (GetConfigValue(ConfigKeys.ApiDownloadFileBlocklist) ?? defaultValue)
             .Split(',', StringSplitOptions.RemoveEmptyEntries)
             .Select(x => x.Trim())
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Select(x => x.ToLower())
             .ToHashSet();
+    }
+
+    public bool IsSampleFilterEnabled()
+    {
+        var defaultValue = true;
+        var configValue = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.ApiSampleFilterEnabled));
+        return configValue != null ? bool.Parse(configValue) : defaultValue;
     }
 
     public string GetImportStrategy()
