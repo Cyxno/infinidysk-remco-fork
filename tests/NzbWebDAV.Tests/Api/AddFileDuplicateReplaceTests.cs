@@ -173,6 +173,61 @@ public sealed class AddFileDuplicateReplaceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AddFileAsync_NoReplace_KeepsExistingQueueItem()
+    {
+        var existingId = Guid.NewGuid();
+        const string fileName = "Sliders.S01E01.part.3.Pilot.nzb";
+        const string category = "tv";
+        await SeedQueueItemAsync(existingId, fileName, category);
+
+        var controller = CreateController();
+        var error = await Assert.ThrowsAsync<BadHttpRequestException>(() =>
+            controller.AddFileAsync(CreateRequest(
+                fileName, category, replaceExisting: false)));
+
+        Assert.Contains("already exists", error.Message);
+        Assert.Equal(existingId, (await _context.QueueItems.AsNoTracking()
+            .SingleAsync(q => q.Category == category && q.FileName == fileName)).Id);
+    }
+
+    [Fact]
+    public async Task AddFileAsync_NoReplace_KeepsQueueItemInsertedAfterPreCheck()
+    {
+        var conflictingId = Guid.NewGuid();
+        const string fileName = "Sliders.S01E01.part.5.Pilot.nzb";
+        const string category = "tv";
+        var controller = CreateController();
+        controller.AfterDuplicatePreCheckHook = async () =>
+        {
+            await using var raceContext = new DavDatabaseContext(_options);
+            raceContext.QueueItems.Add(CreateQueueItem(conflictingId, fileName, category));
+            raceContext.NzbNames.Add(new NzbName { Id = conflictingId, FileName = fileName });
+            await raceContext.SaveChangesAsync();
+        };
+
+        var error = await Assert.ThrowsAsync<BadHttpRequestException>(() =>
+            controller.AddFileAsync(CreateRequest(
+                fileName, category, replaceExisting: false)));
+
+        Assert.Contains("already exists", error.Message);
+        Assert.Equal(conflictingId, (await _context.QueueItems.AsNoTracking()
+            .SingleAsync(q => q.Category == category && q.FileName == fileName)).Id);
+    }
+
+    [Fact]
+    public async Task AddFileAsync_UsesCallerAssignedNzoId()
+    {
+        var assignedId = Guid.NewGuid();
+        const string fileName = "Sliders.S01E01.part.4.Pilot.nzb";
+
+        var response = await CreateController().AddFileAsync(
+            CreateRequest(fileName, "tv", nzoId: assignedId));
+
+        Assert.Equal(assignedId.ToString(), Assert.Single(response.NzoIds));
+        Assert.True(await _context.QueueItems.AsNoTracking().AnyAsync(q => q.Id == assignedId));
+    }
+
+    [Fact]
     public async Task AddFileAsync_RejectsAtLimit_AndResumesAtThreshold()
     {
         ConfigureAdmission(maxItems: 2, resumeThreshold: 1);
@@ -270,10 +325,21 @@ public sealed class AddFileDuplicateReplaceTests : IAsyncLifetime
         ]);
     }
 
+    private async Task SeedQueueItemAsync(Guid id, string fileName, string category)
+    {
+        _context.QueueItems.Add(CreateQueueItem(id, fileName, category));
+        _context.NzbNames.Add(new NzbName { Id = id, FileName = fileName });
+        await _context.SaveChangesAsync();
+        _context.ChangeTracker.Clear();
+    }
+
     private async Task SeedQueueItem(string fileName, string category)
     {
-        var id = Guid.NewGuid();
-        _context.QueueItems.Add(new QueueItem
+        await SeedQueueItemAsync(Guid.NewGuid(), fileName, category);
+    }
+
+    private static QueueItem CreateQueueItem(Guid id, string fileName, string category) =>
+        new()
         {
             Id = id,
             CreatedAt = DateTime.UtcNow,
@@ -284,13 +350,13 @@ public sealed class AddFileDuplicateReplaceTests : IAsyncLifetime
             Category = category,
             Priority = QueueItem.PriorityOption.Normal,
             PostProcessing = QueueItem.PostProcessingOption.None,
-        });
-        _context.NzbNames.Add(new NzbName { Id = id, FileName = fileName });
-        await _context.SaveChangesAsync();
-        _context.ChangeTracker.Clear();
-    }
+        };
 
-    private static AddFileRequest CreateRequest(string fileName, string category)
+    private static AddFileRequest CreateRequest(
+        string fileName,
+        string category,
+        Guid? nzoId = null,
+        bool replaceExisting = true)
     {
         var nzb = """
             <?xml version="1.0" encoding="utf-8"?>
@@ -305,6 +371,8 @@ public sealed class AddFileDuplicateReplaceTests : IAsyncLifetime
             """;
         return new AddFileRequest
         {
+            NzoId = nzoId,
+            ReplaceExistingQueueItem = replaceExisting,
             FileName = fileName,
             ContentType = "application/x-nzb",
             NzbFileStream = new MemoryStream(Encoding.UTF8.GetBytes(nzb)),
