@@ -47,6 +47,7 @@ Special thanks to the forks and contributors whose ideas we consolidated:
 * [@mrghxst](https://github.com/mrghxst)
 * [@qooode](https://github.com/qooode)
 * [@dgherman](https://github.com/dgherman)
+* [@loambit](http://github.com/loambit)
 
 ## Features
 
