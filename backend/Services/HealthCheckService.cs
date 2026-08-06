@@ -25,6 +25,7 @@ public class HealthCheckService : BackgroundService
 {
     private const int MaximumMissingSegmentIds = 100_000;
     private const int NoMatchConfirmationsRequired = 2;
+    private static readonly TimeSpan HealthCheckProgressTimeout = TimeSpan.FromMinutes(5);
 
     // Repeated remove-and-blocklist repairs for the same library path in a short window indicate
     // a replacement loop (Arr keeps re-grabbing a release repair keeps rejecting, issue #732).
@@ -200,6 +201,7 @@ public class HealthCheckService : BackgroundService
         // Attribution for latency histograms — does not change pool admission priority.
         using var maintenanceScope = ct.SetContext(MaintenanceDownloadContext.Instance);
 
+        ContextualCancellationTokenSource? statCts = null;
         try
         {
             if (isUrgentRepair)
@@ -225,16 +227,23 @@ public class HealthCheckService : BackgroundService
             var debounce = DebounceUtil.CreateDebounce(TimeSpan.FromMilliseconds(200));
             progressHook.ProgressChanged += (_, progress) =>
             {
+                try { statCts?.CancelAfter(HealthCheckProgressTimeout); }
+                catch (ObjectDisposedException) { }
                 var message = $"{davItem.Id}|{progress}";
                 debounce(() => _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, message));
             };
 
-            // perform health check
-            var progress = progressHook.ToPercentage(sampled.Count);
-            await ArticleExistenceChecker.CheckAsync(_usenetClient, sampled, concurrency, progress, ct)
-                .ConfigureAwait(false);
-            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
-            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
+            // Only cancel a STAT sweep after it has made no progress for a sustained
+            // period. A complete/deep scan can otherwise run as long as it continues
+            // advancing; cancellation reaches and drains every in-flight STAT request.
+            using (statCts = ContextualCancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                statCts.CancelAfter(HealthCheckProgressTimeout);
+                var progress = progressHook.ToPercentage(sampled.Count);
+                await ArticleExistenceChecker.CheckAsync(
+                    _usenetClient, sampled, concurrency, progress, statCts.Token).ConfigureAwait(false);
+            }
+            CompleteHealthProgress(davItem.Id);
 
             // update the database.
             // the next check is scheduled so the interval doubles with the item's age since release.
@@ -254,10 +263,26 @@ public class HealthCheckService : BackgroundService
                 HealthCheckResult.RepairAction.None,
                 healthyMessage, ct).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (
+            !ct.IsCancellationRequested && statCts?.IsCancellationRequested == true)
+        {
+            CompleteHealthProgress(davItem.Id);
+            var utcNow = DateTimeOffset.UtcNow;
+            davItem.LastHealthCheck = utcNow;
+            davItem.NextHealthCheck = utcNow + TimeSpan.FromDays(1);
+            Log.Warning(
+                "Health check for {Path} made no STAT progress for {Timeout}. Deferred next check.",
+                davItem.Path, HealthCheckProgressTimeout);
+            await RecordHealthResult(
+                dbClient, davItem,
+                HealthCheckResult.HealthResult.Unhealthy,
+                HealthCheckResult.RepairAction.ActionNeeded,
+                $"Health check deferred: no STAT progress for {HealthCheckProgressTimeout.TotalMinutes:0} minutes.",
+                ct).ConfigureAwait(false);
+        }
         catch (UsenetArticleNotFoundException e)
         {
-            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
-            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
+            CompleteHealthProgress(davItem.Id);
             if (FilenameUtil.IsImportantFileType(davItem.Name))
             {
                 lock (_missingSegmentIds)
@@ -276,8 +301,7 @@ public class HealthCheckService : BackgroundService
         {
             // Connection-level STAT failures (e.g. buffered 400 goodbye) must not trigger
             // repair or leave NextHealthCheck unset — defer and surface ActionNeeded.
-            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
-            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
+            CompleteHealthProgress(davItem.Id);
             var utcNow = DateTimeOffset.UtcNow;
             davItem.LastHealthCheck = utcNow;
             davItem.NextHealthCheck = utcNow + TimeSpan.FromDays(1);
@@ -291,8 +315,7 @@ public class HealthCheckService : BackgroundService
         {
             // STAT/read timeouts and socket/IO failures must not dump stacks or trigger Arr repair —
             // defer and surface ActionNeeded with a single human-readable Warning.
-            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
-            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
+            CompleteHealthProgress(davItem.Id);
             var utcNow = DateTimeOffset.UtcNow;
             davItem.LastHealthCheck = utcNow;
             davItem.NextHealthCheck = utcNow + TimeSpan.FromDays(1);
@@ -313,6 +336,12 @@ public class HealthCheckService : BackgroundService
         }
     }
 
+    private void CompleteHealthProgress(Guid davItemId)
+    {
+        _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItemId}|100");
+        _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItemId}|done");
+    }
+
     private async Task DeferHealthCheck(
         DavItem davItem,
         DavDatabaseClient dbClient,
@@ -324,8 +353,7 @@ public class HealthCheckService : BackgroundService
         davItem.LastHealthCheck = utcNow;
         davItem.NextHealthCheck = ComputeFailureNextHealthCheck(utcNow, isKnownFailure);
 
-        _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
-        _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
+        CompleteHealthProgress(davItem.Id);
 
         if (isKnownFailure)
         {
