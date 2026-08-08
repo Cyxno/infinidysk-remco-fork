@@ -290,7 +290,7 @@ public class GetAndHeadHandlerPatch : IRequestHandler
                         readCts.CancelAfter(Timeout.InfiniteTimeSpan);
                         await CopyToAsync(stream, response.Body, copyStart, copyEnd,
                             (n, pos) => _activeReadRegistry.Touch(sessionId, n, pos),
-                            traceRange, ct).ConfigureAwait(false);
+                            traceRange, readCts, ct).ConfigureAwait(false);
                         FinishRange(sessionId, traceRange, ReadSession.EndReasonCode.Completed);
                         ClearStreamingFailureAfterCompletedRead(
                             _failureTracker,
@@ -303,6 +303,14 @@ public class GetAndHeadHandlerPatch : IRequestHandler
                     }
                     catch (OperationCanceledException) when (httpContext.RequestAborted.IsCancellationRequested)
                     {
+                        FinishRange(sessionId, traceRange, ReadSession.EndReasonCode.Aborted);
+                        throw;
+                    }
+                    catch (StreamingWriteTimeoutException)
+                    {
+                        // Watchdog-fired write timeout: the client stopped reading but kept the
+                        // connection open. Treat as a client abort so the response is a clean
+                        // close, not a 500 with a stack trace.
                         FinishRange(sessionId, traceRange, ReadSession.EndReasonCode.Aborted);
                         throw;
                     }
@@ -394,6 +402,7 @@ public class GetAndHeadHandlerPatch : IRequestHandler
         long? end,
         Action<long, long>? onBytesServed,
         StreamTraceRangeContext? traceRange,
+        CancellationTokenSource readCts,
         CancellationToken cancellationToken)
     {
         // Skip to the first offset
@@ -426,10 +435,12 @@ public class GetAndHeadHandlerPatch : IRequestHandler
                 if (bytesRead == 0)
                     return;
 
-                // Write the data to the destination stream
+                // Write the data to the destination stream. Bound the write so a client
+                // that stopped reading but kept the connection open (HTTP/2 flow control,
+                // tunnel, or proxy) cannot hold its in-flight article budget until restart.
                 var writeStarted = Stopwatch.GetTimestamp();
-                await dest.WriteAsync(
-                    buffer.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
+                await WriteWithProgressTimeoutAsync(
+                    dest, buffer.AsMemory(0, bytesRead), readCts, cancellationToken).ConfigureAwait(false);
                 _streamTrace.AddStall(
                     traceRange, StreamStallKind.ClientWrite, Stopwatch.GetElapsedTime(writeStarted));
 
@@ -445,6 +456,53 @@ public class GetAndHeadHandlerPatch : IRequestHandler
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private ValueTask WriteWithProgressTimeoutAsync(
+        Stream dest,
+        Memory<byte> chunk,
+        CancellationTokenSource readCts,
+        CancellationToken cancellationToken) =>
+        WriteWithProgressTimeoutAsync(
+            dest, chunk, _configManager.GetStreamingWriteTimeout(), readCts, cancellationToken);
+
+    /// <summary>
+    /// Writes one chunk to the client, enforcing a per-write progress deadline. A healthy
+    /// client completes a 64 KB write in milliseconds; a write that has not completed within
+    /// the configured window means the client stopped reading but kept the connection open,
+    /// which would otherwise pin the in-flight article budget until the container restarts.
+    /// On timeout the linked read token is cancelled so the whole pipeline unwinds and the
+    /// stream's leases are released.
+    /// </summary>
+    internal static async ValueTask WriteWithProgressTimeoutAsync(
+        Stream dest,
+        Memory<byte> chunk,
+        TimeSpan timeout,
+        CancellationTokenSource readCts,
+        CancellationToken cancellationToken)
+    {
+        if (timeout <= TimeSpan.Zero)
+        {
+            await dest.WriteAsync(chunk, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            await dest.WriteAsync(chunk, cancellationToken).AsTask()
+                .WaitAsync(timeout, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            // Cancel the linked token so the producer stops prefetching and the stream is
+            // disposed, releasing its in-flight article budget. Surface as a
+            // StreamingWriteTimeoutException (an OperationCanceledException) so the request
+            // unwinds through the client-abort path rather than a 500 with a stack trace.
+            await readCts.CancelAsync().ConfigureAwait(false);
+            throw new StreamingWriteTimeoutException(
+                "Client stopped reading; streaming write timed out.");
         }
     }
 }
