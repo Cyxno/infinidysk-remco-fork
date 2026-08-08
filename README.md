@@ -1,4 +1,4 @@
-> [!IMPORTANT]
+> [!IMPORTANT] 
 > InfiniDysk is designed as a drop-in replacement and upgrade from `nzbdav-dev/nzbdav v0.6.4`. Follow the [migration guide](https://www.infinidysk.com/getting-started/migration/) before switching an existing installation.
 >
 > Early adopters report **2x network throughput** and **seek times improved by up to 4x** compared with v0.6.4.
