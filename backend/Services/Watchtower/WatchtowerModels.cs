@@ -1,4 +1,5 @@
 using System.Text.Json;
+using NzbWebDAV.Extensions;
 
 namespace NzbWebDAV.Services;
 
@@ -33,7 +34,7 @@ public static class WtJson
     {
         if (string.IsNullOrWhiteSpace(json)) return new List<WtPointer>();
         try { return JsonSerializer.Deserialize<List<WtPointer>>(json, Opts) ?? new List<WtPointer>(); }
-        catch { return new List<WtPointer>(); }
+        catch (Exception e) when (!e.IsCancellationException()) { return new List<WtPointer>(); }
     }
 
     public static string WritePointers(IEnumerable<WtPointer> pointers)
@@ -43,7 +44,7 @@ public static class WtJson
     {
         if (string.IsNullOrWhiteSpace(json)) return new List<string>();
         try { return JsonSerializer.Deserialize<List<string>>(json, Opts) ?? new List<string>(); }
-        catch { return new List<string>(); }
+        catch (Exception e) when (!e.IsCancellationException()) { return new List<string>(); }
     }
 
     public static string WriteStrings(IEnumerable<string> values)

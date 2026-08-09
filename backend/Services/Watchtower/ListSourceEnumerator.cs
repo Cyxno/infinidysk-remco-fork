@@ -1,5 +1,6 @@
 using System.Text.Json;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Extensions;
 using NzbWebDAV.Utils;
 using Serilog;
 
@@ -211,7 +212,7 @@ public class ListSourceEnumerator
     private static JsonDocument ParseOrThrow(string json)
     {
         try { return JsonDocument.Parse(json); }
-        catch (Exception e) { throw new InvalidOperationException("The addon response was not valid JSON.", e); }
+        catch (Exception e) when (!e.IsCancellationException()) { throw new InvalidOperationException("The addon response was not valid JSON.", e); }
     }
 
     public sealed class CatalogChoice
@@ -285,7 +286,7 @@ public class ListSourceEnumerator
                 }
             }
         }
-        catch
+        catch (Exception e) when (!e.IsCancellationException())
         {
             // Malformed list payload; yield whatever refs parsed before the failure.
         }

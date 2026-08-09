@@ -1,6 +1,7 @@
 using System.Runtime.ExceptionServices;
 using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Config;
+using NzbWebDAV.Extensions;
 using Serilog;
 
 namespace NzbWebDAV.Services.Benchmark;
@@ -36,7 +37,7 @@ internal sealed class BenchmarkConnectionLadder(UsenetProviderConfig.ConnectionD
                 {
                     throw;
                 }
-                catch (Exception e)
+                catch (Exception e) when (!e.IsCancellationException(ct))
                 {
                     failure = e;
                     // Give the provider a beat to free a lingering slot before retrying.
