@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using NzbWebDAV.Services.SupportPack;
 
@@ -14,9 +15,17 @@ public sealed class DownloadSupportPackController(SupportPackService supportPack
         Response.Headers.ContentDisposition = $"attachment; filename=\"infinidysk-support-{timestamp}.zip\"";
         Response.Headers.CacheControl = "no-store";
 
+        // Quality warnings must precede the streaming body so the Support UI can show
+        // them after download. They are cheap point-in-time reads, not pack content.
+        // Compute once and thread through to the manifest so the header and the
+        // archive cannot disagree if state changes mid-generation.
+        var packQuality = supportPack.GetPackQualityWarnings();
+        if (packQuality.Count > 0)
+            Response.Headers["X-Support-Pack-Quality"] = JsonSerializer.Serialize(packQuality);
+
         // ZipArchive performs synchronous finalization writes. BodyWriter's stream
         // supports those writes whereas Kestrel's Response.Body does not.
-        await supportPack.WriteAsync(Response.BodyWriter.AsStream(), HttpContext.RequestAborted)
+        await supportPack.WriteAsync(Response.BodyWriter.AsStream(), packQuality, HttpContext.RequestAborted)
             .ConfigureAwait(false);
         return new EmptyResult();
     }
