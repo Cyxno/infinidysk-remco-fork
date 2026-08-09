@@ -2,6 +2,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using NzbWebDAV.Extensions;
 using NzbWebDAV.Par2Recovery.Packets;
 using Serilog;
 
@@ -34,7 +35,7 @@ namespace NzbWebDAV.Par2Recovery
                 {
                     packet = await ReadPacketAsync(stream).ConfigureAwait(false);
                 }
-                catch (Exception e)
+                catch (Exception e) when (!e.IsCancellationException(ct))
                 {
                     Log.Warning(e, "Failed to read PAR2 packet");
                     break;
