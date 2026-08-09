@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Extensions;
 using Serilog;
 
 namespace NzbWebDAV.Services;
@@ -64,7 +65,7 @@ public class MultipartFileSizeRepairService : BackgroundService
             {
                 multipart = await dbClient.GetDavMultipartFileAsync(item, ct).ConfigureAwait(false);
             }
-            catch (Exception e)
+            catch (Exception e) when (!e.IsCancellationException(ct))
             {
                 missing++;
                 Log.Warning(
