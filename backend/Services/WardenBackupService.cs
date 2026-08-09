@@ -18,7 +18,7 @@ public partial class WardenBackupService : BackgroundService
     private const long MaxRestoreBytes = 256L * 1024 * 1024;
     private const long MaxPushBytes = 95L * 1024 * 1024;
 
-    private static readonly HttpClient Http = new(new HttpClientHandler { AutomaticDecompression = DecompressionMethods.None })
+    private static readonly HttpClient Http = new(new HttpClientHandler { AutomaticDecompression = DecompressionMethods.None, CheckCertificateRevocationList = true })
     {
         Timeout = TimeSpan.FromSeconds(100),
     };
@@ -154,7 +154,7 @@ public partial class WardenBackupService : BackgroundService
 
             await using var raw = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
             using var buffer = await BufferAsync(raw, ct).ConfigureAwait(false);
-            Stream body = LooksGzip(buffer) ? new GZipStream(buffer, CompressionMode.Decompress) : buffer;
+            using Stream body = LooksGzip(buffer) ? new GZipStream(buffer, CompressionMode.Decompress) : buffer;
             using var limitedBody = new LimitedReadStream(body, WardenInputLimits.MaxDecompressedBytes);
             var count = await _store.ReplaceSourceAsync(WardenStore.LocalSourceId, limitedBody, ct).ConfigureAwait(false);
             Log.Information("Warden backup: restored {Count} fingerprints from {Repo}", count, s.Repo);
@@ -259,7 +259,7 @@ public partial class WardenBackupService : BackgroundService
         {
             if (ms.Length + read > MaxRestoreBytes)
                 throw new InvalidOperationException("Backup file exceeds the size limit.");
-            ms.Write(buf, 0, read);
+            await ms.WriteAsync(buf.AsMemory(0, read), ct).ConfigureAwait(false);
         }
         ms.Position = 0;
         return ms;
@@ -282,6 +282,13 @@ public partial class WardenBackupService : BackgroundService
         public bool Ok { get; init; }
         public string? Sha { get; init; }
         public bool StaleConflict { get; init; }
+    }
+
+    public override void Dispose()
+    {
+        _gate.Dispose();
+        GC.SuppressFinalize(this);
+        base.Dispose();
     }
 
     private sealed class GithubException(string message) : Exception(message);

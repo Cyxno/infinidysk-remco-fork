@@ -95,7 +95,9 @@ public class WatchtowerService(
                         {
                             Log.Warning("Watchtower: cycle exceeded {Budget:n0}s watchdog; abandoning and restarting",
                                 CycleWatchdog.TotalSeconds);
+#pragma warning disable CA1849 // synchronous Cancel is required here -- CancelAsync cannot be awaited while holding _ctsLock, and the cancel must be ordered before the abandoned-cycle continuation
                             lock (_ctsLock) cycleCts.Cancel();
+#pragma warning restore CA1849
                             _ = cycle.ContinueWith(static t => _ = t.Exception, CancellationToken.None,
                                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
                                 TaskScheduler.Default);
@@ -420,7 +422,7 @@ public class WatchtowerService(
     }
 
     private static List<string> EffectiveScopes(
-        WantedItem expander, IReadOnlyDictionary<string, string> scopeBySource, string globalScope)
+        WantedItem expander, Dictionary<string, string> scopeBySource, string globalScope)
     {
         var scopes = new List<string>();
         foreach (var srcId in WtJson.ReadStrings(expander.Provenance))
@@ -590,7 +592,7 @@ public class WatchtowerService(
 
     private Dictionary<string, DesiredRow> BuildDesiredRows(
         IReadOnlyList<EpisodeEnumerator.Episode> episodes, string? seriesTitle, string imdb, string scope, long now,
-        IReadOnlySet<int> parkedFallbackSeasons)
+        HashSet<int> parkedFallbackSeasons)
     {
         var desired = new Dictionary<string, DesiredRow>();
         var aired = episodes.Where(e => e.AirDateUnix is null || e.AirDateUnix <= now).ToList();
@@ -703,7 +705,7 @@ public class WatchtowerService(
     private static bool IsImdbId(string contentId)
     {
         var s = contentId;
-        var colon = s.IndexOf(':');
+        var colon = s.IndexOf(':', StringComparison.Ordinal);
         if (colon > 0) s = s[..colon];
         if (s.StartsWith("tt", StringComparison.OrdinalIgnoreCase)) s = s[2..];
         return s.Length > 0 && s.All(char.IsDigit);
@@ -712,7 +714,7 @@ public class WatchtowerService(
     private static string CanonicalImdb(string contentId)
     {
         var s = contentId;
-        var colon = s.IndexOf(':');
+        var colon = s.IndexOf(':', StringComparison.Ordinal);
         if (colon > 0) s = s[..colon];
         return s.StartsWith("tt", StringComparison.OrdinalIgnoreCase) ? s : "tt" + s;
     }
@@ -1257,4 +1259,17 @@ public class WatchtowerService(
         TimeSpan.FromSeconds(configManager.GetWatchtowerVerifyTimeoutSeconds());
 
     private static long Now() => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+    public override void Dispose()
+    {
+        lock (_ctsLock)
+        {
+            _disabledCts?.Dispose();
+            _disabledCts = null;
+        }
+        _indexerGate.Dispose();
+        GC.SuppressFinalize(this);
+        base.Dispose();
+    }
+
 }

@@ -2,7 +2,7 @@
 
 namespace NzbWebDAV.Utils;
 
-public partial class FilenameUtil
+public static partial class FilenameUtil
 {
     // Group `pw` contains the password,
     // Group `rm` contains the part of the filename that should be removed to create a clean job name
@@ -29,7 +29,7 @@ public partial class FilenameUtil
 
     public static bool IsVideoFile(string filename)
     {
-        return VideoExtensions.Contains(Path.GetExtension(filename).ToLower());
+        return VideoExtensions.Contains(Path.GetExtension(filename).ToLowerInvariant());
     }
 
     public static bool IsRarFile(string? filename)
@@ -71,7 +71,7 @@ public partial class FilenameUtil
         var passMatch = PasswordRegex.Match(filename);
         var jobName = Path.GetFileNameWithoutExtension(
             passMatch.Success ?
-            filename.Replace(passMatch.Groups["rm"].Value, "") :
+            filename.Replace(passMatch.Groups["rm"].Value, "", StringComparison.Ordinal) :
             filename
         );
         return PathSanitizer.SanitizeComponentWithLog(jobName);

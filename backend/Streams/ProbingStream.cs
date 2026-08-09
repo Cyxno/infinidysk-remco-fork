@@ -83,7 +83,7 @@ public class ProbingStream(Stream stream) : Stream
             return 1 + read;
         }
 
-        return await stream.ReadAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
+        return await stream.ReadAsync(buffer.AsMemory(offset, count), cancellationToken).ConfigureAwait(false);
     }
 
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
@@ -132,6 +132,7 @@ public class ProbingStream(Stream stream) : Stream
         if (_disposed) return;
         stream.Dispose();
         _disposed = true;
+        base.Dispose(disposing);
     }
 
     public override async ValueTask DisposeAsync()
@@ -140,5 +141,6 @@ public class ProbingStream(Stream stream) : Stream
         await stream.DisposeAsync().ConfigureAwait(false);
         _disposed = true;
         GC.SuppressFinalize(this);
+        await base.DisposeAsync().ConfigureAwait(false);
     }
 }

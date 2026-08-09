@@ -10,7 +10,7 @@ namespace NzbWebDAV.Services;
 /// Fribb/anime-lists dataset, which frequently carries the id Kitsu's API omits.
 /// The dataset is a single large json file; we download, index, and cache it in memory.
 /// </summary>
-public class AnimeListMappingResolver
+public sealed class AnimeListMappingResolver : IDisposable
 {
     private const string DatasetUrl =
         "https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-list-full.json";
@@ -32,7 +32,7 @@ public class AnimeListMappingResolver
             if (index.HasData)
             {
                 // serve the (stale) data we already have and refresh in the background
-                _ = Task.Run(() => LoadIfDueAsync(CancellationToken.None));
+                _ = Task.Run(() => LoadIfDueAsync(CancellationToken.None), CancellationToken.None);
             }
             else
             {
@@ -158,7 +158,9 @@ public class AnimeListMappingResolver
 
     private static HttpClient CreateClient()
     {
+#pragma warning disable CA2000 // handler is owned by the static HttpClient (process lifetime by design)
         var handler = new SocketsHttpHandler { AutomaticDecompression = DecompressionMethods.All };
+#pragma warning restore CA2000
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("InfiniDysk (https://github.com/infinidysk/infinidysk)");
         return client;
@@ -193,6 +195,13 @@ public class AnimeListMappingResolver
             return dict is not null && dict.TryGetValue(id, out var m) ? m : null;
         }
     }
+
+    public void Dispose()
+    {
+        _loadGate.Dispose();
+        GC.SuppressFinalize(this);
+    }
+
 }
 
 public sealed record AnimeMapping(int? TvdbId, string? ImdbId, bool IsMovie, int? TvdbSeason);

@@ -33,7 +33,7 @@ public class WardenSourcesImportController(WardenStore warden, WardenRemoteSourc
             if (file.Length > MaxUploadBytes)
                 throw new BadHttpRequestException("File is too large.");
             using var reader = new StreamReader(file.OpenReadStream());
-            content = await reader.ReadToEndAsync(ct);
+            content = await reader.ReadToEndAsync(ct).ConfigureAwait(false);
         }
         else
         {
@@ -54,7 +54,7 @@ public class WardenSourcesImportController(WardenStore warden, WardenRemoteSourc
         if (added > 0)
             _ = Task.Run(async () =>
             {
-                try { await remote.RefreshDueAsync(CancellationToken.None); }
+                try { await remote.RefreshDueAsync(CancellationToken.None).ConfigureAwait(false); }
                 catch (Exception e) { Log.Debug(e, "Warden: post-import refresh failed"); }
             });
 
@@ -139,6 +139,12 @@ public class WardenSourcesImportController(WardenStore warden, WardenRemoteSourc
 [Route("api/warden-sources-export")]
 public class WardenSourcesExportController(WardenStore warden) : BaseApiController
 {
+    private static readonly JsonSerializerOptions BundleJsonOptions = new()
+    {
+        WriteIndented = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
+
     protected override Task<IActionResult> HandleRequest()
     {
         var items = warden.GetSources()
@@ -153,11 +159,7 @@ public class WardenSourcesExportController(WardenStore warden) : BaseApiControll
             .ToList();
 
         var bundle = new Bundle { Version = 1, Items = items };
-        var json = JsonSerializer.Serialize(bundle, new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        });
+        var json = JsonSerializer.Serialize(bundle, BundleJsonOptions);
 
         return Task.FromResult<IActionResult>(File(Encoding.UTF8.GetBytes(json), "application/json", "bundle.json"));
     }

@@ -19,8 +19,7 @@ public sealed class PooledBufferStream : Stream
         ISegmentBufferPool? pool = null,
         BufferPoolDiagnostics? diagnostics = null)
     {
-        if (capacityHint < 0)
-            throw new ArgumentOutOfRangeException(nameof(capacityHint));
+        ArgumentOutOfRangeException.ThrowIfNegative(capacityHint);
 
         _pool = pool ?? SharedArrayPoolAdapter.Instance;
         _diagnostics = diagnostics ?? BufferPoolDiagnostics.Shared;
@@ -59,8 +58,7 @@ public sealed class PooledBufferStream : Stream
         {
             ThrowIfDisposed();
             ArgumentOutOfRangeException.ThrowIfNegative(value);
-            if (value > int.MaxValue)
-                throw new ArgumentOutOfRangeException(nameof(value));
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(value, int.MaxValue);
             _position = (int)value;
         }
     }
@@ -159,8 +157,7 @@ public sealed class PooledBufferStream : Stream
     {
         ThrowIfDisposed();
         ArgumentOutOfRangeException.ThrowIfNegative(value);
-        if (value > int.MaxValue)
-            throw new ArgumentOutOfRangeException(nameof(value));
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(value, int.MaxValue);
 
         var newLength = (int)value;
         if (newLength > _length)
@@ -182,12 +179,12 @@ public sealed class PooledBufferStream : Stream
         base.Dispose(disposing);
     }
 
-    public override ValueTask DisposeAsync()
+    public override async ValueTask DisposeAsync()
     {
         ReturnBuffer();
         _disposed = true;
         GC.SuppressFinalize(this);
-        return ValueTask.CompletedTask;
+        await base.DisposeAsync().ConfigureAwait(false);
     }
 
     private void EnsureCapacity(int required)

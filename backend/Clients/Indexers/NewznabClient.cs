@@ -126,7 +126,7 @@ public class NewznabClient(
             {
                 var code = doc.Root.Attribute("code")?.Value;
                 var desc = doc.Root.Attribute("description")?.Value ?? "Indexer returned an error.";
-                throw new Exception(code is null ? desc : $"[{code}] {desc}");
+                throw new InvalidOperationException(code is null ? desc : $"[{code}] {desc}");
             }
             var items = doc.Root?.Element("channel")?.Elements("item") ?? [];
             return items.Select(ParseItem).ToList();
@@ -145,7 +145,7 @@ public class NewznabClient(
 
         var enclosure = item.Element("enclosure");
         var sizeStr = enclosure?.Attribute("length")?.Value ?? GetAttr(attrs, "size");
-        long.TryParse(sizeStr, out var size);
+        var size = long.TryParse(sizeStr, out var parsedSize) ? parsedSize : 0;
 
         var nzbUrl = enclosure?.Attribute("url")?.Value
                      ?? item.Element("link")?.Value

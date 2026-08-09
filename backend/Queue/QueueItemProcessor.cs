@@ -203,7 +203,9 @@ public class QueueItemProcessor(
         }
     }
 
+#pragma warning disable CA1859 // non-generic facade over RunStageAsync<T>; returning Task<object?> would leak the wrapper's shape for no benefit
     private Task RunStageAsync(string stage, Func<Task> action)
+#pragma warning restore CA1859
     {
         return RunStageAsync<object?>(stage, async () =>
         {
@@ -243,7 +245,7 @@ public class QueueItemProcessor(
         // if the `/blobs` folder is tampered with outside the nzbdav process,
         // then it is possible that the nzb file goes missing.
         if (queueNzbStream is null)
-            throw new Exception($"The NZB file could not be found.");
+            throw new InvalidOperationException($"The NZB file could not be found.");
 
         // load config for handling duplicate nzbs
         var existingMountFolder = await GetMountFolder().ConfigureAwait(false);
@@ -359,8 +361,8 @@ public class QueueItemProcessor(
         {
             var fileProcessingResultsAll = await fileProcessors
                 .Select(x => x!.ProcessAsync(part2Progress.SubProgress))
-                .WithConcurrencyAsync(QueueFanOut.GetConcurrency(ct, configManager))
-                .GetAllAsync(ct).ConfigureAwait(false);
+                .WithConcurrencyAsync(QueueFanOut.GetConcurrency(configManager, ct))
+                .GetAllAsync(ct: ct).ConfigureAwait(false);
             var results = fileProcessingResultsAll
                 .Where(x => x is not null)
                 .Select(x => x!)
@@ -375,7 +377,7 @@ public class QueueItemProcessor(
         // step 3 -- Optionally check full article existence
         var checkedFullHealth = false;
         var healthCheckCategories = configManager.GetEnsureArticleExistenceCategories();
-        if (healthCheckCategories.Contains(queueItem.Category.ToLower()))
+        if (healthCheckCategories.Contains(queueItem.Category.ToLowerInvariant()))
         {
             var segmentsByFile = fileInfos
                 .Where(x => x.IsRar || FilenameUtil.IsImportantFileType(x.FileName))
@@ -397,7 +399,7 @@ public class QueueItemProcessor(
                 .ToPercentage(articlesToCheck.Count);
             var healthCheckConcurrency = Math.Min(
                 configManager.GetHealthCheckConcurrency(),
-                QueueFanOut.GetConcurrency(ct, configManager));
+                QueueFanOut.GetConcurrency(configManager, ct));
             await RunStageAsync(
                     "health",
                     () => ArticleExistenceChecker
@@ -569,7 +571,7 @@ public class QueueItemProcessor(
             return mountFolder;
         }
 
-        throw new Exception("Duplicate nzb with more than 100 existing copies.");
+        throw new InvalidOperationException("Duplicate nzb with more than 100 existing copies.");
     }
 
     private HistoryItem CreateHistoryItem(DavItem? mountFolder, DateTime jobStartTime, string? errorMessage = null)

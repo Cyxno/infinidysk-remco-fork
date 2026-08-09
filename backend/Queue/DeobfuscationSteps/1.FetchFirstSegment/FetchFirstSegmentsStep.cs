@@ -53,7 +53,7 @@ public static class FetchFirstSegmentsStep
         await foreach (var result in files
                            .Select(x => FetchFirstSegment(x, usenetClient, abortCts.Token))
                            .WithConcurrencyAsync(
-                               QueueFanOut.GetConcurrency(abortCts.Token, configManager),
+                               QueueFanOut.GetConcurrency(configManager, abortCts.Token),
                                abortCts.Token)
                            .WithCancellation(abortCts.Token)
                            .ConfigureAwait(false))
@@ -135,7 +135,7 @@ public static class FetchFirstSegmentsStep
                     if (DeadNzbFailFast.IsImportantNzbFile(files[i]))
                     {
                         abortFile = files[i];
-                        abortCts.Cancel();
+                        await abortCts.CancelAsync().ConfigureAwait(false);
                         break;
                     }
                 }
@@ -166,7 +166,7 @@ public static class FetchFirstSegmentsStep
             await foreach (var (i, result) in pending
                                .Select(i => RescueFirstSegment(i, files[i], usenetClient, rescueAbortCts.Token))
                                .WithConcurrencyAsync(
-                                   QueueFanOut.GetConcurrency(rescueAbortCts.Token, configManager),
+                                   QueueFanOut.GetConcurrency(configManager, rescueAbortCts.Token),
                                    rescueAbortCts.Token)
                                .WithCancellation(rescueAbortCts.Token)
                                .ConfigureAwait(false))
@@ -211,7 +211,9 @@ public static class FetchFirstSegmentsStep
                 nzbFile.GetSubjectFileName());
             return (index, BuildMissingFirstSegment(nzbFile));
         }
+#pragma warning disable CA2016 // CA2016: classify cancellation regardless of the ambient token -- forwarding it would misclassify cancellations from internal timeout/child tokens
         catch (Exception e) when (!e.IsCancellationException())
+#pragma warning restore CA2016
         {
             // Transient provider errors must not be treated as permanent missing segments
             // (otherwise fail-fast would mark good NZBs failed — see nzbdav-dev#245).
@@ -319,7 +321,9 @@ public static class FetchFirstSegmentsStep
             return BuildMissingFirstSegment(nzbFile);
         }
         catch (Exception e) when (
+#pragma warning disable CA2016 // CA2016: classify cancellation regardless of the ambient token -- forwarding it would misclassify cancellations from internal timeout/child tokens
             e.IsTransientTransportException() && !e.IsCancellationException())
+#pragma warning restore CA2016
         {
             throw new RetryableDownloadException(
                 $"Transient provider error fetching first segment of " +

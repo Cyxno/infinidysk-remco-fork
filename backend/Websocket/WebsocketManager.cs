@@ -171,7 +171,7 @@ public class WebsocketManager
                     }
                     else
                     {
-                        messageBuffer.Write(buffer, 0, result.Count);
+                        await messageBuffer.WriteAsync(buffer.AsMemory(0, result.Count), SigtermUtil.GetCancellationToken()).ConfigureAwait(false);
                     }
                 }
 
@@ -404,7 +404,7 @@ public class WebsocketManager
     private static string? GetMessageKey(WebsocketTopic topic, string message)
     {
         if (!topic.IsKeyed) return null;
-        var separator = message.IndexOf('|');
+        var separator = message.IndexOf('|', StringComparison.Ordinal);
         return separator > 0 ? message[..separator] : null;
     }
 

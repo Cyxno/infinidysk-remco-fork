@@ -47,7 +47,7 @@ public class AddFileController(
         await using var sourceStream = request.NzbFileStream;
         var id = request.NzoId ?? Guid.NewGuid();
         var category = StringUtil.EmptyToNull(request.Category)
-                       ?? configManager.GetManualUploadCategory();
+                       ?? Config.GetManualUploadCategory();
 
         var replacesExisting = await dbClient.Ctx.QueueItems
             .AnyAsync(
@@ -58,15 +58,17 @@ public class AddFileController(
         IDisposable? admissionReservation = null;
         if (!replacesExisting)
         {
-            var maxItems = configManager.GetQueueMaxItems();
+            var maxItems = Config.GetQueueMaxItems();
             if (maxItems > 0)
             {
                 var currentCount = await dbClient.Ctx.QueueItems
                     .CountAsync(request.CancellationToken)
                     .ConfigureAwait(false);
-                var resumeThreshold = configManager.GetQueueResumeThreshold();
+                var resumeThreshold = Config.GetQueueResumeThreshold();
+#pragma warning disable CA2000 // reservation is assigned to the method-scoped using below; the only statements between creation and the using are a null check and logging
                 admissionReservation = queueManager.TryReserveQueueSlot(
                     currentCount, maxItems, resumeThreshold);
+#pragma warning restore CA2000
                 if (admissionReservation is null)
                 {
                     Log.Warning(
@@ -113,12 +115,12 @@ public class AddFileController(
             }
 
             // backup the nzb file if enabled
-            if (configManager.IsNzbBackupEnabled())
+            if (Config.IsNzbBackupEnabled())
             {
-                var backupLocation = configManager.GetNzbBackupLocation();
+                var backupLocation = Config.GetNzbBackupLocation();
                 if (backupLocation != null)
                 {
-                    await BackupNzbAsync(id, request.FileName, category, backupLocation);
+                    await BackupNzbAsync(id, request.FileName, category, backupLocation).ConfigureAwait(false);
                 }
             }
 
@@ -291,7 +293,7 @@ public class AddFileController(
 
     protected override async Task<IActionResult> Handle()
     {
-        var request = await AddFileRequest.New(httpContext, configManager).ConfigureAwait(false);
+        var request = await AddFileRequest.New(Context, Config).ConfigureAwait(false);
         return Ok(await AddFileAsync(request).ConfigureAwait(false));
     }
 
@@ -333,11 +335,11 @@ public class AddFileController(
 
             await using var src = BlobStore.ReadBlob(id);
             await using var dst = System.IO.File.Create(destPath);
-            await src!.CopyToAsync(dst);
+            await src!.CopyToAsync(dst).ConfigureAwait(false);
         }
         catch (Exception e) when (!e.IsCancellationException())
         {
-            throw new Exception($"Could not save nzb to `{backupLocation}`", e);
+            throw new InvalidOperationException($"Could not save nzb to `{backupLocation}`", e);
         }
     }
 
@@ -355,9 +357,9 @@ public class AddFileController(
         if (string.IsNullOrWhiteSpace(fileName) ||
             Path.IsPathRooted(fileName) ||
             fileName is "." or ".." ||
-            fileName.Contains('/') ||
-            fileName.Contains('\\') ||
-            fileName.Contains('\0'))
+            fileName.Contains('/', StringComparison.Ordinal) ||
+            fileName.Contains('\\', StringComparison.Ordinal) ||
+            fileName.Contains('\0', StringComparison.Ordinal))
         {
             throw new ArgumentException("The NZB backup file name must be a single file name.", nameof(fileName));
         }
@@ -368,9 +370,9 @@ public class AddFileController(
         if (string.IsNullOrWhiteSpace(category) ||
             Path.IsPathRooted(category) ||
             category is "." or ".." ||
-            category.Contains('/') ||
-            category.Contains('\\') ||
-            category.Contains('\0'))
+            category.Contains('/', StringComparison.Ordinal) ||
+            category.Contains('\\', StringComparison.Ordinal) ||
+            category.Contains('\0', StringComparison.Ordinal))
         {
             throw new ArgumentException("The NZB backup category must be a single directory name.", nameof(category));
         }

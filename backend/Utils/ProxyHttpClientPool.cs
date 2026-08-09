@@ -50,7 +50,9 @@ public static class ProxyHttpClientPool
             {
                 handler.SslOptions = new SslClientAuthenticationOptions
                 {
+#pragma warning disable CA5359 // behind the explicit per-provider SkipTlsVerification setting for providers with broken/self-signed certs
                     RemoteCertificateValidationCallback = static (_, _, _, _) => true,
+#pragma warning restore CA5359
                 };
             }
 
@@ -76,7 +78,9 @@ public static class ProxyHttpClientPool
         for (var i = 0; i < addresses.Length; i++)
         {
             var isLast = i == addresses.Length - 1;
+#pragma warning disable CA2000 // socket is disposed on connect failure; on success the pooled connection stream owns it
             var socket = new Socket(addresses[i].AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+#pragma warning restore CA2000
             socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
             TrySetKeepAliveTuning(socket);
             try

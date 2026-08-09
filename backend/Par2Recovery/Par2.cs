@@ -8,7 +8,7 @@ using Serilog;
 
 namespace NzbWebDAV.Par2Recovery
 {
-    public class Par2
+    public static class Par2
     {
         internal static readonly Regex ParVolume = new(
             @"(.+)\.vol[0-9]{1,10}\+[0-9]{1,10}\.par2$",
@@ -71,8 +71,8 @@ namespace NzbWebDAV.Par2Recovery
 
             // Test if the magic constant matches.
             var magic = Encoding.ASCII.GetString(header.Magic);
-            if (!Par2PacketHeaderMagic.Equals(magic))
-                throw new ApplicationException("Invalid Magic Constant");
+            if (!Par2PacketHeaderMagic.Equals(magic, StringComparison.Ordinal))
+                throw new InvalidDataException("Invalid Magic Constant");
 
             // Determine which type of packet we have.
             var packetType = Encoding.ASCII.GetString(header.PacketType);
@@ -145,9 +145,9 @@ namespace NzbWebDAV.Par2Recovery
             {
                 var header = ReadStruct<Par2PacketHeader>(bytes);
                 var magic = Encoding.ASCII.GetString(header.Magic);
-                return Par2PacketHeaderMagic.Equals(magic);
+                return Par2PacketHeaderMagic.Equals(magic, StringComparison.Ordinal);
             }
-            catch (Exception e)
+            catch (Exception)
             {
                 return false;
             }

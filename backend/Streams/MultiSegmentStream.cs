@@ -130,14 +130,14 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                 estimatedSegmentSize,
                 failFastOnFirstSegment,
                 usePipelinedBodyRequests,
-                cancellationToken,
                 fileName,
                 readBudget,
                 segmentFallbacks,
                 exactSegmentSizes,
                 inFlightArticleBudget,
                 useContainerAwareFill,
-                firstSegmentFileOffset);
+                firstSegmentFileOffset,
+                cancellationToken);
     }
 
     private MultiSegmentStream
@@ -148,14 +148,14 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         long estimatedSegmentSize,
         bool failFastOnFirstSegment,
         bool usePipelinedBodyRequests,
-        CancellationToken cancellationToken,
         string? fileName,
         long? readBudget,
         string[][]? segmentFallbacks,
         ReadOnlyMemory<long> exactSegmentSizes,
         InFlightArticleBudget? inFlightArticleBudget,
         bool useContainerAwareFill,
-        long? firstSegmentFileOffset
+        long? firstSegmentFileOffset,
+        CancellationToken cancellationToken
     )
     {
         _segmentIds = segmentIds;
@@ -229,7 +229,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                 segmentIds[index] = _segmentIds.Span[batchStart + index];
             }
 
-            await _streamTasks.Writer.WaitToWriteAsync(cancellationToken);
+            await _streamTasks.Writer.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
             var leases = new ArticleByteLease?[batchCount];
             Task<SegmentDownloadResult>[]? streamTasks = null;
             try
@@ -279,7 +279,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                 {
                     var planned = GetPlannedSegmentBytes(batchStart + responseIndex);
                     await _streamTasks.Writer.WriteAsync(
-                        streamTasks[responseIndex], cancellationToken);
+                        streamTasks[responseIndex], cancellationToken).ConfigureAwait(false);
                     segmentsEnqueued++;
                     enqueuedBytes += planned;
                     Interlocked.Add(ref _inFlightPrefetchBytes, planned);
@@ -310,7 +310,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
             await WaitForPrefetchCeilingAsync(cancellationToken).ConfigureAwait(false);
 
             var segmentId = _segmentIds.Span[index];
-            await _streamTasks.Writer.WaitToWriteAsync(cancellationToken);
+            await _streamTasks.Writer.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
             var lease = await LeaseSegmentBytesAsync(
                 GetPlannedSegmentBytes(index), cancellationToken).ConfigureAwait(false);
             var streamTask = DownloadSegment(
@@ -318,7 +318,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
             var planned = GetPlannedSegmentBytes(index);
             try
             {
-                await _streamTasks.Writer.WriteAsync(streamTask, cancellationToken);
+                await _streamTasks.Writer.WriteAsync(streamTask, cancellationToken).ConfigureAwait(false);
                 enqueuedBytes += planned;
                 Interlocked.Add(ref _inFlightPrefetchBytes, planned);
             }
@@ -407,7 +407,9 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                     .ConfigureAwait(false);
 
                 await ThrowOnSegmentIdMismatchAsync(segmentId, bodyResponse).ConfigureAwait(false);
+#pragma warning disable CA2000 // stream ownership transfers to the returned SegmentDownloadResult
                 var stream = await DrainSegmentAsync(
+#pragma warning restore CA2000
                         bodyResponse.Stream!, segmentIndex, cancellationToken, lease, estimate)
                     .ConfigureAwait(false);
                 lease = null;
@@ -520,7 +522,9 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         {
             var response = await responseTask.ConfigureAwait(false);
             await ThrowOnSegmentIdMismatchAsync(segmentId, response).ConfigureAwait(false);
+#pragma warning disable CA2000 // stream ownership transfers to the returned SegmentDownloadResult
             var stream = await DrainSegmentAsync(
+#pragma warning restore CA2000
                     response.Stream!, segmentIndex, cancellationToken, lease, estimate)
                 .ConfigureAwait(false);
             lease = null; // owned by BudgetedStream / buffer
@@ -634,7 +638,9 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                     var response = await _usenetClient.DecodedBodyAsync(segmentId, cancellationToken)
                         .ConfigureAwait(false);
                     await ThrowOnSegmentIdMismatchAsync(segmentId, response).ConfigureAwait(false);
+#pragma warning disable CA2000 // stream ownership transfers to the returned SegmentDownloadResult
                     var stream = await DrainSegmentAsync(
+#pragma warning restore CA2000
                         response.Stream!, segmentIndex, cancellationToken, lease).ConfigureAwait(false);
                     lease = null;
                     return stream;
@@ -690,7 +696,9 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                     var response = await _usenetClient.DecodedBodyAsync(segmentId, cancellationToken)
                         .ConfigureAwait(false);
                     await ThrowOnSegmentIdMismatchAsync(segmentId, response).ConfigureAwait(false);
+#pragma warning disable CA2000 // stream ownership transfers to the returned SegmentDownloadResult
                     var stream = await DrainSegmentAsync(
+#pragma warning restore CA2000
                         response.Stream!, segmentIndex, cancellationToken, lease).ConfigureAwait(false);
                     lease = null;
                     return stream;
@@ -741,7 +749,9 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                     Log.Debug(
                         "Segment {PrimaryIndex} recovered via fallback MessageId {FallbackId} while reading {FileName}.",
                         segmentIndex, fallbackId, _fileName);
+#pragma warning disable CA2000 // stream ownership transfers to the returned SegmentDownloadResult
                     var stream = await DrainSegmentAsync(
+#pragma warning restore CA2000
                         bodyResponse.Stream!, segmentIndex, cancellationToken, lease).ConfigureAwait(false);
                     lease = null;
                     return stream;
@@ -817,6 +827,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                 fill, _fileName, segmentId);
         }
 
+#pragma warning disable CA2000 // gap-fill stream ownership transfers to the returned SegmentDownloadResult
         return SegmentDownloadResult.ZeroFill(
             CreateGapFillStream(fill, segmentIndex),
             messageTemplate,
@@ -824,6 +835,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
             fill,
             exception,
             GetPlannedSegmentBytes(segmentIndex));
+#pragma warning restore CA2000
     }
 
     private Stream CreateGapFillStream(long fill, int segmentIndex)
@@ -1072,7 +1084,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                 var wasQueued = _streamTasks.Reader.TryRead(out var streamTask);
                 if (!wasQueued)
                 {
-                    if (!await _streamTasks.Reader.WaitToReadAsync(cancellationToken)) return 0;
+                    if (!await _streamTasks.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false)) return 0;
                     if (!_streamTasks.Reader.TryRead(out streamTask)) return 0;
                 }
 
@@ -1097,11 +1109,11 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
             }
 
             // read from the stream
-            var read = await _stream.ReadAsync(buffer, cancellationToken);
+            var read = await _stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
             if (read > 0) return read;
 
             // if the stream ended, continue to the next stream.
-            await _stream.DisposeAsync();
+            await _stream.DisposeAsync().ConfigureAwait(false);
             _stream = null;
         }
     }
@@ -1164,11 +1176,13 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         base.Dispose(disposing);
     }
 
+#pragma warning disable CA2215 // base.DisposeAsync() would route through Close()/Dispose(true) back into EnsureDisposeAsync's sync-over-async teardown; the _disposeGate/_disposeTask pair already guarantees exactly-once cleanup (see Dispose(bool) recursion note)
     public override async ValueTask DisposeAsync()
     {
         await EnsureDisposeAsync().ConfigureAwait(false);
         GC.SuppressFinalize(this);
     }
+#pragma warning restore CA2215
 
     private Task EnsureDisposeAsync()
     {
@@ -1186,7 +1200,9 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
     {
         try
         {
+#pragma warning disable CA1849 // synchronous Cancel is required -- teardown callbacks must run before _streamTasks.Writer completes; CancelAsync would race TryComplete
             _cts.Cancel();
+#pragma warning restore CA1849
         }
         catch (ObjectDisposedException)
         {

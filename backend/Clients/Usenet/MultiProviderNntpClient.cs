@@ -234,7 +234,9 @@ public class MultiProviderNntpClient(
         CancellationToken cancellationToken
     )
     {
+#pragma warning disable CA2000 // fetch scope is disposed on both the success and failure paths below
         var fetchScope = concurrentReadTracker?.BeginSegmentFetch(segmentId);
+#pragma warning restore CA2000
         try
         {
             return await RunStreamingFromPoolWithBackup(
@@ -328,6 +330,7 @@ public class MultiProviderNntpClient(
                     {
                         var fallbackAdmission = new TaskCompletionSource(
                             TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable CA2025 // batch response tasks intentionally outlive this scope: releasePending only returns the pending-admission reservation, while in-flight transfers hold (and release via completion callbacks) their own per-provider connection locks
                         responses[index] = ResolveBatchResponseAsync(
                             primaryBatch.Responses[index],
                             segmentIds[index],
@@ -337,6 +340,7 @@ public class MultiProviderNntpClient(
                             fallbackAdmission,
                             coordinator,
                             cancellationToken);
+#pragma warning restore CA2025
                         previousFallbackAdmission = fallbackAdmission.Task;
                     }
                     return new UsenetDecodedBodyBatch { Responses = responses };
@@ -374,7 +378,7 @@ public class MultiProviderNntpClient(
 
             InvokeCompletionCallback(CompleteBatchFetches, ArticleBodyResult.NotRetrieved);
             lastException?.Throw();
-            throw new Exception("There are no usenet providers configured.");
+            throw new InvalidOperationException("There are no usenet providers configured.");
         }
     }
 
@@ -382,7 +386,7 @@ public class MultiProviderNntpClient(
         Task<UsenetDecodedBodyResponse> primaryResponse,
         SegmentId segmentId,
         MultiConnectionNntpClient primaryProvider,
-        IReadOnlyList<MultiConnectionNntpClient> fallbackProviders,
+        MultiConnectionNntpClient[] fallbackProviders,
         Task previousFallbackAdmission,
         TaskCompletionSource fallbackAdmission,
         BatchCallbackCoordinator coordinator,
@@ -467,7 +471,7 @@ public class MultiProviderNntpClient(
                 && lastException.SourceException.TryGetCausingException<TimeoutException>(out _);
             var reprobePrimary = !definitiveMiss
                 || (retryPrimaryOnMiss?.Invoke() != false && !primaryCachedMiss);
-            if ((exhaustedTimeout && fallbackProviders.Count > 0)
+            if ((exhaustedTimeout && fallbackProviders.Length > 0)
                 || (definitiveMiss && !reprobePrimary))
             {
                 var primaryGroup = NormalizeStorageGroup(primaryProvider.StorageGroup);
@@ -807,7 +811,7 @@ public class MultiProviderNntpClient(
         if (lastOutcomeWasException) lastException!.Throw();
         if (lastNoArticleResult is not null) return lastNoArticleResult;
         if (orderedProviders.Count == 0)
-            throw new Exception("There are no usenet providers configured.");
+            throw new InvalidOperationException("There are no usenet providers configured.");
         // All providers were skipped (negative cache / storage-group) without a probe.
         throw new UsenetArticleNotFoundException(segmentId.ToString()!);
     }
@@ -940,11 +944,11 @@ public class MultiProviderNntpClient(
         }
         if (lastNoArticleResult is not null) return lastNoArticleResult;
         if (orderedProviders.Count == 0)
-            throw new Exception("There are no usenet providers configured.");
+            throw new InvalidOperationException("There are no usenet providers configured.");
         // All providers were skipped (negative cache / storage-group) without a probe.
         if (articleId is { } exhaustedId)
             throw new UsenetArticleNotFoundException(exhaustedId.ToString()!);
-        throw new Exception("There are no usenet providers configured.");
+        throw new InvalidOperationException("There are no usenet providers configured.");
     }
 
     private bool IsCachedMissing(SegmentId segmentId, MultiConnectionNntpClient provider)

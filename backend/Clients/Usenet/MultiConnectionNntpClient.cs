@@ -310,7 +310,9 @@ public class MultiConnectionNntpClient(
             }
             catch (Exception e) when (
                 streamingTimeout != null
+#pragma warning disable CA2016 // CA2016: classify cancellation regardless of the ambient token -- forwarding it would misclassify cancellations from internal timeout/child tokens
                 && e.IsCancellationException()
+#pragma warning restore CA2016
                 && !ct.IsCancellationRequested)
             {
                 // Per-segment deadline fired while the caller is still reading. The
@@ -331,7 +333,7 @@ public class MultiConnectionNntpClient(
                 circuitBreaker.RecordFailure("streaming-timeout-pipelined-BODY");
                 Log.Warning(
                     "Streaming timeout executing pipelined nntp BODY commands for provider {Provider} after {Timeout}s. No retries left.",
-                    providerName, streamingTimeout.PerSegmentTimeout.TotalSeconds);
+                    Host, streamingTimeout.PerSegmentTimeout.TotalSeconds);
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw new TimeoutException(
                     "Timeout executing pipelined nntp BODY commands after " +
@@ -392,7 +394,7 @@ public class MultiConnectionNntpClient(
                 {
                     Log.Debug(e,
                         "Pooled connection for provider {Provider} failed pipelined NNTP BODY commands. Retrying with another connection.",
-                        providerName);
+                        Host);
                     continue;
                 }
 
@@ -400,14 +402,14 @@ public class MultiConnectionNntpClient(
                 {
                     Log.Debug(e,
                         "Error executing pipelined NNTP BODY commands for provider {Provider}. Retrying with a new connection.",
-                        providerName);
+                        Host);
                     retryCount--;
                     continue;
                 }
 
                 e.LogWarningKnownOrStack(
                     "Error executing pipelined NNTP BODY commands for provider {Provider}.",
-                    providerName);
+                    Host);
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
             }
@@ -480,12 +482,12 @@ public class MultiConnectionNntpClient(
                 LogException(() => connectionLock?.Dispose());
                 if (retryCount > 0)
                 {
-                    Log.Debug(e, "Error getting connection-lock for provider {Provider}. Retrying with a new connection.", providerName);
+                    Log.Debug(e, "Error getting connection-lock for provider {Provider}. Retrying with a new connection.", Host);
                     retryCount--;
                     continue;
                 }
 
-                e.LogWarningKnownOrStack("Error getting connection-lock for provider {Provider}.", providerName);
+                e.LogWarningKnownOrStack("Error getting connection-lock for provider {Provider}.", Host);
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
             }
@@ -551,7 +553,7 @@ public class MultiConnectionNntpClient(
                 circuitBreaker.RecordFailure($"streaming-timeout-{name}");
                 Log.Warning(
                     "Streaming timeout executing nntp {Command} command for provider {Provider} after {Timeout}s. No retries left.",
-                    name, providerName, streamingTimeout.PerSegmentTimeout.TotalSeconds);
+                    name, Host, streamingTimeout.PerSegmentTimeout.TotalSeconds);
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw new TimeoutException(
                     $"Timeout executing nntp {name} command after {streamingTimeout.MaxRetries + 1} attempts.");
@@ -579,7 +581,7 @@ public class MultiConnectionNntpClient(
                 // the wait before MultiProviderNntpClient can fall over to the next
                 // provider. Replace the socket (the read may have left partial bytes
                 // on the wire) and propagate so the outer provider loop moves on.
-                IncrementTimeoutCount(providerName);
+                IncrementTimeoutCount(Host);
                 deferredCallback.Discard();
                 circuitBreaker.RecordFailure($"read-timeout-{name}");
                 LogException(() => connectionLock?.Replace());
@@ -602,13 +604,13 @@ public class MultiConnectionNntpClient(
                 // its failure says nothing about provider health. Drain and retry.
                 if (wasReused)
                 {
-                    Log.Debug(e, "Pooled connection for provider {Provider} failed nntp {Command} command. Retrying with another connection.", providerName, name);
+                    Log.Debug(e, "Pooled connection for provider {Provider} failed nntp {Command} command. Retrying with another connection.", Host, name);
                     continue;
                 }
 
                 if (retryCount > 0)
                 {
-                    Log.Debug(e, "Error executing nntp {Command} command for provider {Provider}. Retrying with a new connection.", name, providerName);
+                    Log.Debug(e, "Error executing nntp {Command} command for provider {Provider}. Retrying with a new connection.", name, Host);
                     retryCount--;
                     continue;
                 }
@@ -620,7 +622,7 @@ public class MultiConnectionNntpClient(
                     circuitBreaker.RecordFailure($"cmd-{name}-{e.GetType().Name}");
 
                 e.LogWarningKnownOrStack(
-                    "Error executing nntp {Command} command for provider {Provider}.", name, providerName);
+                    "Error executing nntp {Command} command for provider {Provider}.", name, Host);
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
             }
@@ -750,7 +752,9 @@ public class MultiConnectionNntpClient(
                         operation,
                         Stopwatch.GetElapsedTime(moveStarted));
                 }
+#pragma warning disable CA2016 // CA2016: classify cancellation regardless of the ambient token -- forwarding it would misclassify cancellations from internal timeout/child tokens
                 catch (Exception e) when (!e.IsCancellationException())
+#pragma warning restore CA2016
                 {
                     // Do not RecordFailure — STAT must not feed the breaker — but the
                     // connection is poisoned and must not return to the pool.
@@ -803,7 +807,9 @@ public class MultiConnectionNntpClient(
                         operation,
                         Stopwatch.GetElapsedTime(moveStarted));
                 }
+#pragma warning disable CA2016 // CA2016: classify cancellation regardless of the ambient token -- forwarding it would misclassify cancellations from internal timeout/child tokens
                 catch (Exception e) when (!e.IsCancellationException())
+#pragma warning restore CA2016
                 {
                     circuitBreaker.RecordFailure($"pipelined-enum-{e.GetType().Name}");
                     connectionLock.Replace();
@@ -877,7 +883,9 @@ public class MultiConnectionNntpClient(
         {
             throw;
         }
+#pragma warning disable CA2016 // CA2016: classify cancellation regardless of the ambient token -- forwarding it would misclassify cancellations from internal timeout/child tokens
         catch (Exception e) when (!e.IsCancellationException())
+#pragma warning restore CA2016
         {
             // A client abort mid-connect can surface as an IOException rather than
             // a cancellation exception; it must not trip a healthy provider.
@@ -901,10 +909,10 @@ public class MultiConnectionNntpClient(
             Log.Warning(
                 "Connection pool for provider {Provider} retired while requests were waiting. " +
                 "Abandoning stale requests without retrying or penalizing provider health.",
-                providerName);
+                Host);
         }
         return new NntpClientRetiredException(
-            $"Connection pool for provider '{providerName}' retired while the request was waiting.",
+            $"Connection pool for provider '{Host}' retired while the request was waiting.",
             inner);
     }
 

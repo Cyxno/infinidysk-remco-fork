@@ -6,9 +6,9 @@ using ZstdSharp;
 
 namespace NzbWebDAV.Database;
 
-public class BlobStore
+public static class BlobStore
 {
-    private static readonly int CompressionLevel = 1;
+    private const int CompressionLevel = 1;
     private static string ConfigPath => DavDatabaseContext.ConfigPath;
     private static readonly Lock LockObj = new();
     private static readonly MemoryCache MetadataCache = new(new MemoryCacheOptions
@@ -61,7 +61,7 @@ public class BlobStore
     {
         await using var fileStream = OpenBlobWrite(id);
         await using var compressionStream = new CompressionStream(fileStream, CompressionLevel);
-        await MemoryPackSerializer.SerializeAsync(compressionStream, blob);
+        await MemoryPackSerializer.SerializeAsync(compressionStream, blob).ConfigureAwait(false);
         MetadataCache.Remove(id);
     }
 
@@ -79,7 +79,7 @@ public class BlobStore
         if (stream == null) return default;
         await using var fileStream = stream;
         await using var decompressionStream = new DecompressionStream(fileStream);
-        var blob = await MemoryPackSerializer.DeserializeAsync<T>(decompressionStream);
+        var blob = await MemoryPackSerializer.DeserializeAsync<T>(decompressionStream).ConfigureAwait(false);
         if (blob is not null)
         {
             MetadataCache.Set(id, blob, new MemoryCacheEntryOptions()

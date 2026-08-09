@@ -29,7 +29,9 @@ public class UsenetStreamingClient : WrappingNntpClient
         ArticleMissNegativeCache? articleMissCache = null,
         ProviderLatencyTracker? latencyTracker = null,
         ConcurrentReadTracker? concurrentReadTracker = null)
+#pragma warning disable CA2000 // the client chain transfers to the base class and is disposed with this instance
         : base(CreateDownloadingNntpClient(
+#pragma warning restore CA2000
             configManager, websocketManager, usageTracker, metricsWriter, bytesTracker,
             streamTrace, activeReadRegistry, articleMissCache, latencyTracker, concurrentReadTracker))
     {
@@ -74,7 +76,7 @@ public class UsenetStreamingClient : WrappingNntpClient
         };
     }
 
-    private static INntpClient CreateDownloadingNntpClient
+    private static HeaderCachingNntpClient CreateDownloadingNntpClient
     (
         ConfigManager configManager,
         WebsocketManager websocketManager,
@@ -88,16 +90,22 @@ public class UsenetStreamingClient : WrappingNntpClient
         ConcurrentReadTracker? concurrentReadTracker
     )
     {
+#pragma warning disable CA2000 // wrapped by DownloadingNntpClient below; the returned client chain is disposed with this instance
         var multiProviderClient = CreateMultiProviderClient(
+#pragma warning restore CA2000
             configManager, websocketManager, usageTracker, metricsWriter, bytesTracker,
             streamTrace, activeReadRegistry, articleMissCache, latencyTracker, concurrentReadTracker);
+#pragma warning disable CA2000 // ownership transfers to the wrapping/returned client chain, disposed with this instance
         var downloadingClient = new DownloadingNntpClient(multiProviderClient, configManager, latencyTracker);
+#pragma warning restore CA2000
         INntpClient inner = downloadingClient;
         if (configManager.IsSegmentCacheEnabled())
         {
             try
             {
+#pragma warning disable CA2000 // on construction failure the inner chain is returned unwrapped; the returned chain is disposed with this instance
                 inner = new SegmentCacheNntpClient(
+#pragma warning restore CA2000
                     downloadingClient,
                     configManager.GetSegmentCachePath(),
                     configManager.GetSegmentCacheMaxBytes(),
@@ -235,7 +243,9 @@ public class UsenetStreamingClient : WrappingNntpClient
                 label);
         }
 
+#pragma warning disable CA2000 // the pool is owned by the provider's MultiConnectionNntpClient and disposed on provider config change
         var connectionPool = CreateNewConnectionPool(
+#pragma warning restore CA2000
             maxConnections: maxConnections,
             connectionFactory: ct => CreateNewConnection(connectionDetails, ct),
             onConnectionPoolChanged,
@@ -331,7 +341,8 @@ public class UsenetStreamingClient : WrappingNntpClient
         if (ContainsControlChars(connectionDetails.Host) ||
             ContainsControlChars(connectionDetails.User) ||
             ContainsControlChars(connectionDetails.Pass) ||
-            connectionDetails.Host.Contains(' '))
+            // codeql[cs/user-controlled-bypass] — false positive: the operator configures their own NNTP provider host; connecting to a user-specified host is the core feature of a Usenet streaming server (not a multi-tenant app). This ContainsControlChars check is a format guard (no control chars / whitespace in hostnames), not an authorization boundary.
+            connectionDetails.Host.Contains(' ', StringComparison.Ordinal))
         {
             throw new ArgumentException(
                 "Provider host/username/password must not contain whitespace or control characters.");
@@ -348,7 +359,9 @@ public class UsenetStreamingClient : WrappingNntpClient
                     connectionDetails.Host, connectionDetails.Port, connectionDetails.UseSsl,
                     timeoutCts.Token).ConfigureAwait(false);
             }
+#pragma warning disable CA2016 // CA2016: classify cancellation regardless of the ambient token -- forwarding it would misclassify cancellations from internal timeout/child tokens
             catch (Exception e) when (e.IsCancellationException() &&
+#pragma warning restore CA2016
                                       timeoutCts.IsCancellationRequested &&
                                       !ct.IsCancellationRequested)
             {
@@ -370,7 +383,9 @@ public class UsenetStreamingClient : WrappingNntpClient
                         connectionDetails.User, connectionDetails.Pass,
                         timeoutCts.Token).ConfigureAwait(false);
                 }
+#pragma warning disable CA2016 // CA2016: classify cancellation regardless of the ambient token -- forwarding it would misclassify cancellations from internal timeout/child tokens
                 catch (Exception e) when (e.IsCancellationException() &&
+#pragma warning restore CA2016
                                           timeoutCts.IsCancellationRequested &&
                                           !ct.IsCancellationRequested)
                 {

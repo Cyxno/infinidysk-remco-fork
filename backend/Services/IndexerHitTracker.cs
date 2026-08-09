@@ -92,7 +92,7 @@ public class IndexerHitTracker
         foreach (var i in indexers)
         {
             var (windowStart, nextResetAt) = ComputeWindow(now, i.ResetHourUtc);
-            var indexerHits = hits.Where(h => h.IndexerName == i.Name && h.AccessedAt >= windowStart);
+            var indexerHits = hits.Where(h => h.IndexerName == i.Name && h.AccessedAt >= windowStart).ToList();
             var apiCount = indexerHits.Count(h => h.Type == IndexerApiHit.HitType.Search);
             var downloadCount = indexerHits.Count(h => h.Type == IndexerApiHit.HitType.Download);
             result.Add(new UsageSnapshot(
@@ -122,8 +122,10 @@ public class IndexerHitTracker
             });
             await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
 
+#pragma warning disable CA5394 // probabilistic metric pruning is not security-sensitive
             if (Rng.NextDouble() < PruneProbability)
-                _ = Task.Run(() => PruneAsync(CancellationToken.None));
+#pragma warning restore CA5394
+                _ = Task.Run(() => PruneAsync(CancellationToken.None), CancellationToken.None);
         }
         catch (Exception e)
         {

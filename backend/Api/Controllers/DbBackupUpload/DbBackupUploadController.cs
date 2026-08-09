@@ -28,7 +28,8 @@ public class DbBackupUploadController(DatabaseBackupStore store) : BaseApiContro
         if (!HttpContext.Request.HasFormContentType)
             throw new BadHttpRequestException("Expected multipart form body.");
 
-        var file = HttpContext.Request.Form.Files.FirstOrDefault();
+        var formFiles = HttpContext.Request.Form.Files;
+        var file = formFiles.Count > 0 ? formFiles[0] : null;
         if (file is null || file.Length == 0)
             throw new BadHttpRequestException("No backup file was uploaded.");
 
@@ -112,7 +113,7 @@ public class DbBackupUploadController(DatabaseBackupStore store) : BaseApiContro
                 throw PayloadTooLarge("Zip entry compression ratio exceeds the restore safety limit.");
 
             var dest = Path.Join(stagingPath, fileName);
-            await using var entryStream = entry.Open();
+            await using var entryStream = await entry.OpenAsync(ct).ConfigureAwait(false);
             await using var output = System.IO.File.Create(dest);
             extractedBytes += await CopyWithLimitAsync(
                 entryStream,

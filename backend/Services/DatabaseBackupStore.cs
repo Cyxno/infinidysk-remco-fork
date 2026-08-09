@@ -187,8 +187,7 @@ public sealed class DatabaseBackupStore
 
     public int Prune(int retentionCount)
     {
-        if (retentionCount < 0)
-            throw new ArgumentOutOfRangeException(nameof(retentionCount));
+        ArgumentOutOfRangeException.ThrowIfNegative(retentionCount);
         if (retentionCount == 0)
             return 0;
 
@@ -324,7 +323,7 @@ public sealed class DatabaseBackupStore
     {
         if (string.IsNullOrWhiteSpace(backupId))
             throw new ArgumentException("Backup id is required.", nameof(backupId));
-        if (backupId.Contains('/') || backupId.Contains('\\') || backupId.Contains("..", StringComparison.Ordinal))
+        if (backupId.Contains('/', StringComparison.Ordinal) || backupId.Contains('\\', StringComparison.Ordinal) || backupId.Contains("..", StringComparison.Ordinal))
             throw new ArgumentException("Invalid backup id.", nameof(backupId));
         if (backupId.StartsWith('.'))
             throw new ArgumentException("Invalid backup id.", nameof(backupId));

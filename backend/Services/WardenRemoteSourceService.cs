@@ -9,7 +9,7 @@ public class WardenRemoteSourceService : BackgroundService
 {
     private const long MaxDownloadBytes = 256L * 1024 * 1024;
 
-    private static readonly HttpClient Http = new(new HttpClientHandler { AutomaticDecompression = DecompressionMethods.None })
+    private static readonly HttpClient Http = new(new HttpClientHandler { AutomaticDecompression = DecompressionMethods.None, CheckCertificateRevocationList = true })
     {
         Timeout = TimeSpan.FromSeconds(90),
     };
@@ -76,8 +76,7 @@ public class WardenRemoteSourceService : BackgroundService
             await using var raw = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
             using var buffer = await BufferAsync(raw, ct).ConfigureAwait(false);
 
-            Stream body = buffer;
-            if (LooksGzip(buffer)) body = new GZipStream(buffer, CompressionMode.Decompress);
+            using Stream body = LooksGzip(buffer) ? new GZipStream(buffer, CompressionMode.Decompress) : buffer;
 
             using var limitedBody = new LimitedReadStream(body, WardenInputLimits.MaxDecompressedBytes);
             var count = await _store.ReplaceSourceAsync(source.Id, limitedBody, ct).ConfigureAwait(false);
@@ -103,7 +102,7 @@ public class WardenRemoteSourceService : BackgroundService
         {
             if (ms.Length + read > MaxDownloadBytes)
                 throw new InvalidOperationException("Download exceeds the size limit.");
-            ms.Write(buf, 0, read);
+            await ms.WriteAsync(buf.AsMemory(0, read), ct).ConfigureAwait(false);
         }
         ms.Position = 0;
         return ms;

@@ -33,7 +33,9 @@ public class PreflightOrchestrator(
         var mode = configManager.GetPreflightMode();
         if (mode == "off" || candidates.Count == 0) return;
 
+#pragma warning disable CA2000 // session ownership transfers to the background task, which disposes it on completion
         var session = sessionRegistry.BeginSession(profileToken, type, id);
+#pragma warning restore CA2000
 
         _ = Task.Run(async () =>
         {
@@ -83,7 +85,7 @@ public class PreflightOrchestrator(
     private async Task<bool> PreflightCandidateAsync(
         string mode,
         NzbResolutionCache.Candidate candidate,
-        IReadOnlyDictionary<string, IndexerConfig.ConnectionDetails> indexers,
+        Dictionary<string, IndexerConfig.ConnectionDetails> indexers,
         TimeSpan maxWait,
         CancellationToken ct)
     {
@@ -172,7 +174,9 @@ public class PreflightOrchestrator(
                     return null;
                 }
             }
+#pragma warning disable CA2016 // CA2016: classify cancellation regardless of the ambient token -- forwarding it would misclassify cancellations from internal timeout/child tokens
             catch (Exception e) when (!e.IsCancellationException())
+#pragma warning restore CA2016
             {
                 Log.Debug("Preflight NZB fetch failed for {Url}: {Message}", c.NzbUrl, e.Message);
                 return null;

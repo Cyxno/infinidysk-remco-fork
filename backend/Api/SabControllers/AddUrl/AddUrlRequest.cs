@@ -96,14 +96,14 @@ public class AddUrlRequest() : AddFileRequest
         try
         {
             if (string.IsNullOrWhiteSpace(url))
-                throw new Exception($"The url is invalid.");
+                throw new InvalidOperationException($"The url is invalid.");
 
             var response = await GetAsync(
                 url, userAgent, proxyUrl, skipTlsVerification, trustedHosts, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 response.Dispose();
-                throw new Exception($"Received status code {response.StatusCode}.");
+                throw new InvalidOperationException($"Received status code {response.StatusCode}.");
             }
 
             var contentType = response.Content.Headers.ContentType?.MediaType;
@@ -111,7 +111,7 @@ public class AddUrlRequest() : AddFileRequest
             var resolvedFileName = nzbName
                                    ?? GetFilenameFromResponseHeader(response)
                                    ?? GetFilenameFromUrl(url)
-                                   ?? throw new Exception("Nzb filename could not be determined.");
+                                   ?? throw new InvalidOperationException("Nzb filename could not be determined.");
             var fileName = NzbStreamUtil.NormalizeFileName(resolvedFileName);
 
             var fileStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
@@ -209,7 +209,9 @@ public class AddUrlRequest() : AddFileRequest
 
     private static HttpClient InitializeHttpClient(bool skipTlsVerification)
     {
+#pragma warning disable CA2000 // handler is owned by the static HttpClient (process lifetime by design)
         var handler = new SocketsHttpHandler
+#pragma warning restore CA2000
         {
             AllowAutoRedirect = false,
             UseProxy = false,
@@ -219,7 +221,9 @@ public class AddUrlRequest() : AddFileRequest
         {
             handler.SslOptions = new System.Net.Security.SslClientAuthenticationOptions
             {
+#pragma warning disable CA5359 // behind the explicit per-request/per-provider skip-TLS-verification setting for hosts with broken/self-signed certs
                 RemoteCertificateValidationCallback = static (_, _, _, _) => true,
+#pragma warning restore CA5359
             };
         }
         return new HttpClient(handler);
@@ -300,7 +304,9 @@ public class AddUrlRequest() : AddFileRequest
         Exception? lastException = null;
         foreach (var address in addresses.Distinct())
         {
+#pragma warning disable CA2000 // socket is disposed on connect failure; on success the returned NetworkStream owns it (ownsSocket: true)
             var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
+#pragma warning restore CA2000
             {
                 NoDelay = true
             };

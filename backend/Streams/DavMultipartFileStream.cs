@@ -238,7 +238,7 @@ public class DavMultipartFileStream : FastReadOnlyStream
             {
                 var part = fileParts[i];
                 var extraOffset = (i == firstFilePartIndex) ? firstOffset : 0;
-                yield return Task.FromResult(OpenPart(part, extraOffset, i));
+                yield return Task.FromResult<System.IO.Stream>(OpenPart(part, extraOffset, i));
                 i++;
                 continue;
             }
@@ -254,7 +254,7 @@ public class DavMultipartFileStream : FastReadOnlyStream
         }
     }
 
-    private Stream OpenPart(DavMultipartFile.FilePart part, long extraOffset, int partIndex)
+    private PaddedLengthStream OpenPart(DavMultipartFile.FilePart part, long extraOffset, int partIndex)
     {
         if (part.SegmentIdByteRange.StartInclusive != 0 ||
             part.SegmentIdByteRange.Count < 0 ||
@@ -335,11 +335,14 @@ public class DavMultipartFileStream : FastReadOnlyStream
             {
                 _pendingInnerDispose = null;
                 pending.ContinueWith(
-                    static t => { _ = t.Exception; },
-                    TaskContinuationOptions.OnlyOnFaulted);
+                    t => { _ = t.Exception; },
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted,
+                    TaskScheduler.Default);
             }
         }
         _disposed = true;
+        base.Dispose(disposing);
     }
 
     public override async ValueTask DisposeAsync()
@@ -357,5 +360,6 @@ public class DavMultipartFileStream : FastReadOnlyStream
         }
         if (_innerStream != null) await _innerStream.DisposeAsync().ConfigureAwait(false);
         GC.SuppressFinalize(this);
+        await base.DisposeAsync().ConfigureAwait(false);
     }
 }

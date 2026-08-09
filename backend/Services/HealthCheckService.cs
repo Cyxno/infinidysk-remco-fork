@@ -59,7 +59,7 @@ public class HealthCheckService : BackgroundService
     private const double MinDepthDays = 3650;
 
     private readonly ConfigManager _configManager;
-    private readonly INntpClient _usenetClient;
+    private readonly UsenetStreamingClient _usenetClient;
     private readonly WebsocketManager _websocketManager;
     private readonly BenchmarkGate _benchmarkGate;
     private readonly StreamingFailureTracker _failureTracker;
@@ -726,7 +726,7 @@ public class HealthCheckService : BackgroundService
             List<ArrRootFolder> rootFolders;
             try
             {
-                rootFolders = await arrClient.GetRootFolders().ConfigureAwait(false);
+                rootFolders = await arrClient.GetRootFolders(ct).ConfigureAwait(false);
             }
             catch (Exception e)
             {
@@ -742,7 +742,7 @@ public class HealthCheckService : BackgroundService
             // A null/empty path is a malformed response we can't rule this instance in or out
             // with, so if nothing else matches, treat it like an unreachable instance rather
             // than falling through to a delete this instance may not have sanctioned.
-            if (!rootFolders.Any(x => !string.IsNullOrEmpty(x.Path) && symlinkOrStrmPath.StartsWith(x.Path)))
+            if (!rootFolders.Any(x => !string.IsNullOrEmpty(x.Path) && symlinkOrStrmPath.StartsWith(x.Path, StringComparison.Ordinal)))
             {
                 if (rootFolders.Any(x => string.IsNullOrEmpty(x.Path))) anInstanceFailed = true;
                 continue;
@@ -900,7 +900,7 @@ public class HealthCheckService : BackgroundService
                 string deleteMessage;
                 if (symlinkOrStrmPath != null)
                 {
-                    var forceDeleteLinkType = symlinkOrStrmPath.ToLower().EndsWith("strm") ? "strm-file" : "symlink";
+                    var forceDeleteLinkType = symlinkOrStrmPath.ToLowerInvariant().EndsWith("strm", StringComparison.Ordinal) ? "strm-file" : "symlink";
                     deleteMessage = string.Join(" ", [
                         "File failed during streaming.",
                         $"Auto-removed after repeated streaming failures.{failureNote}",
@@ -943,7 +943,7 @@ public class HealthCheckService : BackgroundService
             }
 
             var linkedPath = symlinkOrStrmPath!;
-            var linkType = linkedPath.ToLower().EndsWith("strm") ? "strm-file" : "symlink";
+            var linkType = linkedPath.ToLowerInvariant().EndsWith("strm", StringComparison.Ordinal) ? "strm-file" : "symlink";
 
             // Rate-limit repairs per library file: when Arr keeps re-importing broken
             // replacements to the same location, deleting again only fuels the loop.
@@ -1054,7 +1054,7 @@ public class HealthCheckService : BackgroundService
             var noMatchConfirmations = _arrNoMatchConfirmations.AddOrUpdate(
                 davItem.Id,
                 1,
-                static (_, previous) => previous + 1);
+                (_, previous) => previous + 1);
             if (!ShouldDeleteAfterArrNoMatch(noMatchConfirmations))
             {
                 var noMatchUtcNow = DateTimeOffset.UtcNow;

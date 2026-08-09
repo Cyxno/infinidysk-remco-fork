@@ -31,7 +31,9 @@ public class BaseNntpClient : NntpClient
     {
     }
 
+#pragma warning disable CA2000 // the client is stored in _client and disposed with this instance
     public BaseNntpClient(bool skipTlsVerification) : this(new UsenetClient(new UsenetClientOptions
+#pragma warning restore CA2000
     {
         CrcValidation = EnvironmentUtil.GetEnvironmentVariable("USENET_DISABLE_CRC_VALIDATION") == "1"
             ? YencCrcValidationMode.Off
@@ -51,9 +53,11 @@ public class BaseNntpClient : NntpClient
     {
         try
         {
-            await _client.ConnectAsync(host, port, useSsl, cancellationToken);
+            await _client.ConnectAsync(host, port, useSsl, cancellationToken).ConfigureAwait(false);
         }
+#pragma warning disable CA2016 // CA2016: classify cancellation regardless of the ambient token -- forwarding it would misclassify cancellations from internal timeout/child tokens
         catch (Exception e) when (!e.IsCancellationException())
+#pragma warning restore CA2016
         {
             const string message = "Could not connect to usenet host. Check connection settings.";
             throw new CouldNotConnectToUsenetException(message, e);
@@ -69,7 +73,7 @@ public class BaseNntpClient : NntpClient
     {
         try
         {
-            var response = await _client.AuthenticateAsync(user, pass, cancellationToken);
+            var response = await _client.AuthenticateAsync(user, pass, cancellationToken).ConfigureAwait(false);
             if (!response.Success)
             {
                 var message = $"Could not login to usenet host: {response.ResponseMessage}";
@@ -78,7 +82,9 @@ public class BaseNntpClient : NntpClient
 
             return response;
         }
+#pragma warning disable CA2016 // CA2016: classify cancellation regardless of the ambient token -- forwarding it would misclassify cancellations from internal timeout/child tokens
         catch (Exception e) when (!e.IsCancellationException())
+#pragma warning restore CA2016
         {
             throw new CouldNotLoginToUsenetException("Could not login to usenet host.", e);
         }
@@ -158,7 +164,7 @@ public class BaseNntpClient : NntpClient
     public override async Task<UsenetHeadResponse> HeadAsync(SegmentId segmentId, CancellationToken cancellationToken)
     {
         segmentId = PrepareSegmentId(segmentId);
-        var headResponse = await _client.HeadAsync(segmentId, cancellationToken);
+        var headResponse = await _client.HeadAsync(segmentId, cancellationToken).ConfigureAwait(false);
 
         if (headResponse.ResponseType != UsenetResponseType.ArticleRetrievedHeadFollows)
             throw CreateArticleFetchException(segmentId, headResponse);
@@ -190,7 +196,7 @@ public class BaseNntpClient : NntpClient
     {
         segmentId = PrepareSegmentId(segmentId);
         var bodyResponse = await _client.DecodedBodyAsync(
-            segmentId, onConnectionReadyAgain, cancellationToken);
+            segmentId, onConnectionReadyAgain, cancellationToken).ConfigureAwait(false);
 
         if (bodyResponse.ResponseType != UsenetResponseType.ArticleRetrievedBodyFollows)
             throw CreateArticleFetchException(segmentId, bodyResponse);
@@ -279,7 +285,7 @@ public class BaseNntpClient : NntpClient
             : CreateConnectionLevelException(segmentId, response);
     }
 
-    private static Exception CreateConnectionLevelException(SegmentId segmentId, UsenetResponse response)
+    private static UsenetUnexpectedResponseException CreateConnectionLevelException(SegmentId segmentId, UsenetResponse response)
     {
         if (response.ResponseCode == 480)
         {

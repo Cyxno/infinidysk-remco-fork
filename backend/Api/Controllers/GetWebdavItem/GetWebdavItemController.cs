@@ -43,7 +43,9 @@ public class GetWebdavItemController(
             PerSegmentTimeout = configManager.GetStreamingSegmentTimeout(),
             MaxRetries = configManager.GetStreamingSegmentRetries(),
         };
+#pragma warning disable CA2000 // scoped context is disposed via Response.OnCompleted when the response completes
         var scopedStreamingTimeoutContext = ct.SetContext(streamingTimeoutContext);
+#pragma warning restore CA2000
         HttpContext.Response.OnCompleted(() =>
         {
             scopedStreamingTimeoutContext.Dispose();
@@ -58,7 +60,7 @@ public class GetWebdavItemController(
         Response.Headers["Content-Encoding"] = "identity";
 
         // handle par2 preview
-        if (Path.GetExtension(item.Name).ToLower() == ".par2" && configManager.IsPreviewPar2FilesEnabled())
+        if (string.Equals(Path.GetExtension(item.Name), ".par2", StringComparison.OrdinalIgnoreCase) && configManager.IsPreviewPar2FilesEnabled())
             return await GetPar2PreviewStream(item, ct).ConfigureAwait(false);
 
         // Provisional budget for fully-specified ranges before stream creation.
@@ -127,7 +129,9 @@ public class GetWebdavItemController(
 
             // seek
             stream.Seek(rangeStart.Value, SeekOrigin.Begin);
+#pragma warning disable CA2000 // the length-limited wrapper is returned as the response stream; the response pipeline disposes it (and the inner stream)
             if (rangeEnd is not null) stream = stream.LimitLength(chunkSize);
+#pragma warning restore CA2000
 
             // set response headers
             Response.Headers["Content-Range"] = $"bytes {rangeStart}-{end}/{fileSize}";
@@ -171,7 +175,7 @@ public class GetWebdavItemController(
             StreamTraceRangeContext? traceRange = null;
             try
             {
-                await using var response = await GetWebdavItem(request, ct);
+                await using var response = await GetWebdavItem(request, ct).ConfigureAwait(false);
                 if (response == Stream.Null)
                     return;
                 var effectiveStart = (long)(HttpContext.Items["effectiveRangeStart"] ?? 0L);
@@ -192,7 +196,7 @@ public class GetWebdavItemController(
                     // Body transfer can run for minutes; drop the admission/open
                     // deadline and rely on per-segment mid-stream timeouts.
                     readCts.CancelAfter(Timeout.InfiniteTimeSpan);
-                    await CopyAndReportAsync(response, Response.Body, sessionId, effectiveStart, traceRange, ct);
+                    await CopyAndReportAsync(response, Response.Body, sessionId, effectiveStart, traceRange, ct).ConfigureAwait(false);
                     FinishRange(sessionId, traceRange, ReadSession.EndReasonCode.Completed);
                 }
                 catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested)
@@ -260,7 +264,7 @@ public class GetWebdavItemController(
             int read;
             try
             {
-                read = await src.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false);
+                read = await src.ReadAsync(buffer, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -280,7 +284,7 @@ public class GetWebdavItemController(
             }
             if (read <= 0) break;
             var writeStarted = Stopwatch.GetTimestamp();
-            await dest.WriteAsync(buffer, 0, read, ct).ConfigureAwait(false);
+            await dest.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
             streamTrace.AddStall(
                 traceRange, StreamStallKind.ClientWrite, Stopwatch.GetElapsedTime(writeStarted));
             position += read;
@@ -363,7 +367,7 @@ public class GetWebdavItemController(
     {
         Response.Headers.ContentType = "text/plain";
         await using var stream = await item.GetReadableStreamAsync(ct).ConfigureAwait(false);
-        var fileDescriptors = await Par2.ReadFileDescriptions(stream, ct).GetAllAsync()
+        var fileDescriptors = await Par2.ReadFileDescriptions(stream, ct).GetAllAsync(ct: ct)
             .ConfigureAwait(false);
         return new MemoryStream(Encoding.UTF8.GetBytes(fileDescriptors.ToIndentedJson()));
     }

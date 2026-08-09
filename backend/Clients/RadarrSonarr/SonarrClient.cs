@@ -54,7 +54,7 @@ public class SonarrClient(string host, string apiKey) : ArrClient(host, apiKey)
         if (historyId == null) return ArrRepairOutcome.DownloadHistoryNotFound;
 
         if (await DeleteEpisodeFile(episodeFileId.Value, ct).ConfigureAwait(false) != HttpStatusCode.OK)
-            throw new Exception($"Failed to delete episode file `{symlinkOrStrmPath}` from sonarr instance `{Host}`.");
+            throw new InvalidOperationException($"Failed to delete episode file `{symlinkOrStrmPath}` from sonarr instance `{Host}`.");
 
         await MarkHistoryFailed(historyId.Value, ct).ConfigureAwait(false);
         return ArrRepairOutcome.RemoveAndBlocklistSucceeded;
@@ -107,7 +107,7 @@ public class SonarrClient(string host, string apiKey) : ArrClient(host, apiKey)
         if (cachedSeriesPath != null)
         {
             var series = await GetSeriesOrNull(cachedSeriesId, ct).ConfigureAwait(false);
-            if (series?.Path != null && symlinkOrStrmPath.StartsWith(series.Path))
+            if (series?.Path != null && symlinkOrStrmPath.StartsWith(series.Path, StringComparison.Ordinal))
                 return cachedSeriesId;
             SeriesPathToSeriesIdCache.TryRemove((Host, cachedSeriesPath), out _);
         }
@@ -117,7 +117,7 @@ public class SonarrClient(string host, string apiKey) : ArrClient(host, apiKey)
         foreach (var series in await GetAllSeries(ct).ConfigureAwait(false))
         {
             SeriesPathToSeriesIdCache[(Host, series.Path!)] = series.Id;
-            if (symlinkOrStrmPath.StartsWith(series.Path!))
+            if (symlinkOrStrmPath.StartsWith(series.Path!, StringComparison.Ordinal))
                 result = series.Id;
         }
 

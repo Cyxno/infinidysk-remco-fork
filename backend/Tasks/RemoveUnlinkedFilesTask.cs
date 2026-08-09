@@ -50,7 +50,7 @@ public class RemoveUnlinkedFilesTask : BaseTask
         _progressObserver = progressObserver;
     }
 
-    private DavDatabaseContext CreateContext() => _createContext?.Invoke() ?? new DavDatabaseContext();
+    private DavDatabaseContext CreateContext() => DavDatabaseContexts.Create(_createContext);
 
     protected override async Task ExecuteInternal()
     {
@@ -247,7 +247,7 @@ public class RemoveUnlinkedFilesTask : BaseTask
     /// </summary>
     private static async Task<int> DeleteItemsByIdTextAsync(
         DavDatabaseContext dbContext,
-        IReadOnlyList<UnlinkedItemInfo> items,
+        List<UnlinkedItemInfo> items,
         CancellationToken cancellationToken = default)
     {
         var parameters = new SqliteParameter[items.Count];

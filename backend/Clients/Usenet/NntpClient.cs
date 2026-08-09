@@ -494,8 +494,8 @@ public abstract class NntpClient : INntpClient
     {
         var value = NormalizeSegmentId(id);
         if (value.Length is < 3 or > 248) return false;
-        if (value[0] == '@' || value[^1] == '@' || !value.Contains('@')) return false;
-        if (value.Contains('<') || value.Contains('>')) return false;
+        if (value[0] == '@' || value[^1] == '@' || !value.Contains('@', StringComparison.Ordinal)) return false;
+        if (value.Contains('<', StringComparison.Ordinal) || value.Contains('>', StringComparison.Ordinal)) return false;
         foreach (var character in value.Where(character => char.IsWhiteSpace(character) || char.IsControl(character)))
         {
             return false;
@@ -521,7 +521,7 @@ public abstract class NntpClient : INntpClient
     {
         messageId = "";
         if (string.IsNullOrEmpty(message)) return false;
-        var start = message.IndexOf('<');
+        var start = message.IndexOf('<', StringComparison.Ordinal);
         if (start < 0) return false;
         var end = message.IndexOf('>', start + 1);
         if (end < 0) return false;
@@ -556,7 +556,9 @@ public abstract class NntpClient : INntpClient
                 missing.Add(result.SegmentId);
             }
         }
+#pragma warning disable CA2016 // CA2016: classify cancellation regardless of the ambient token -- forwarding it would misclassify cancellations from internal timeout/child tokens
         catch (Exception e) when (!e.IsCancellationException())
+#pragma warning restore CA2016
         {
             // Session/protocol/transport failure during the primary-only sweep (e.g.
             // UsenetUnexpectedResponseException for a buffered 400 goodbye, or

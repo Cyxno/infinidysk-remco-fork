@@ -158,7 +158,7 @@ public sealed class AltmountScanRunner(UsenetMigrationStore store, ConfigManager
         string storeRef,
         List<WalkedMeta> metas,
         string? storeRoot,
-        IReadOnlyDictionary<string, MigrationCategoryMap> categoryMap,
+        Dictionary<string, MigrationCategoryMap> categoryMap,
         List<PendingScanError> scanErrors,
         CancellationToken ct)
     {
@@ -230,7 +230,7 @@ public sealed class AltmountScanRunner(UsenetMigrationStore store, ConfigManager
     private static PendingRelease BuildV1Release(
         WalkedMeta v1,
         string? storeRoot,
-        IReadOnlyDictionary<string, MigrationCategoryMap> categoryMap)
+        Dictionary<string, MigrationCategoryMap> categoryMap)
     {
         var basename = DeriveBasename(v1.MetaPath);
         var storeRef = $"v1:{v1.MetaPath}";
@@ -300,7 +300,7 @@ public sealed class AltmountScanRunner(UsenetMigrationStore store, ConfigManager
     private static string DeriveTopLevelCategory(string virtualPath)
     {
         var normalised = virtualPath.Replace('\\', '/').Trim('/');
-        var slash = normalised.IndexOf('/');
+        var slash = normalised.IndexOf('/', StringComparison.Ordinal);
         return slash < 0 ? "" : normalised[..slash];
     }
 
@@ -347,7 +347,7 @@ public sealed class AltmountScanRunner(UsenetMigrationStore store, ConfigManager
     }
 
     /// <summary>When every file carries the same NzbdavId, that GUID is the release provenance.</summary>
-    private static string? AgreedNzbdavId(IReadOnlyList<MigrationReleaseFile> files)
+    private static string? AgreedNzbdavId(List<MigrationReleaseFile> files)
     {
         if (files.Count == 0)
             return null;
@@ -381,7 +381,7 @@ public sealed class AltmountScanRunner(UsenetMigrationStore store, ConfigManager
             return;
 
         await using var migrationContext = store.NewContext();
-        await using var davContext = DavContextFactory?.Invoke() ?? new DavDatabaseContext();
+        await using var davContext = DavDatabaseContexts.Create(DavContextFactory);
         var detected = await new AlreadyMigratedDetector()
             .DetectAndRecordAsync(candidates, migrationContext, davContext, ct)
             .ConfigureAwait(false);
