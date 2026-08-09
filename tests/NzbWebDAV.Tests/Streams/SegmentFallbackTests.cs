@@ -97,7 +97,11 @@ public class SegmentFallbackTests
             exactSegmentSizes: Enumerable.Repeat(5L, segmentIds.Length).ToArray());
 
         await Assert.ThrowsAsync<UsenetArticleNotFoundException>(
-            async () => await stream.CopyToAsync(new MemoryStream()));
+            () =>
+            {
+                using var destination = new MemoryStream();
+                return stream.CopyToAsync(destination);
+            });
         await Task.Delay(50);
 
         Assert.True(

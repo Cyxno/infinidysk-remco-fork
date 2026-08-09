@@ -111,10 +111,9 @@ public static class StorePathParser
         if (dash <= 0) return (null, storeBasename);
 
         var left = storeBasename[..dash];
-        foreach (var c in left)
+        foreach (var c in left.Where(c => c is < '0' or > '9'))
         {
-            if (c is < '0' or > '9')
-                return (null, storeBasename);
+            return (null, storeBasename);
         }
 
         if (!long.TryParse(left, out var queueId))

@@ -17,10 +17,9 @@ public static class CategorySanitizer
         if (string.IsNullOrEmpty(category)) return "";
 
         var s = category.Replace('\\', '/').Trim('/');
-        foreach (var part in s.Split('/'))
+        foreach (var part in s.Split('/').Where(part => part is ".." or "."))
         {
-            if (part is ".." or ".")
-                return "";
+            return "";
         }
 
         return s;

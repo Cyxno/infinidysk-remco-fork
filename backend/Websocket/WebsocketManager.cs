@@ -208,29 +208,25 @@ public class WebsocketManager
 
             if (root.TryGetProperty("sub", out var subArray) && subArray.ValueKind == JsonValueKind.Array)
             {
-                foreach (var element in subArray.EnumerateArray())
+                foreach (var name in subArray.EnumerateArray().Select(element => element.GetString()))
                 {
-                    var name = element.GetString();
-                    if (name is not null && WebsocketTopic.TryGetByName(name, out var topic) && topic is not null)
+                    if (name is not null && WebsocketTopic.TryGetByName(name, out var topic) && topic is not null
+                        && session.AddSubscription(topic))
                     {
-                        if (session.AddSubscription(topic))
-                        {
-                            _subscriberCounts.AddOrUpdate(topic, 1, (_, c) => c + 1);
-                            ReplayStateForNewSubscription(session, topic);
-                        }
+                        _subscriberCounts.AddOrUpdate(topic, 1, (_, c) => c + 1);
+                        ReplayStateForNewSubscription(session, topic);
                     }
                 }
             }
 
             if (root.TryGetProperty("unsub", out var unsubArray) && unsubArray.ValueKind == JsonValueKind.Array)
             {
-                foreach (var element in unsubArray.EnumerateArray())
+                foreach (var name in unsubArray.EnumerateArray().Select(element => element.GetString()))
                 {
-                    var name = element.GetString();
-                    if (name is not null && WebsocketTopic.TryGetByName(name, out var topic) && topic is not null)
+                    if (name is not null && WebsocketTopic.TryGetByName(name, out var topic) && topic is not null
+                        && session.RemoveSubscription(topic))
                     {
-                        if (session.RemoveSubscription(topic))
-                            _subscriberCounts.AddOrUpdate(topic, 0, (_, c) => Math.Max(0, c - 1));
+                        _subscriberCounts.AddOrUpdate(topic, 0, (_, c) => Math.Max(0, c - 1));
                     }
                 }
             }

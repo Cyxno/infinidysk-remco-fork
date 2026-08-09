@@ -75,6 +75,7 @@ public class NewznabClient(
             catch (Exception e) when (attempt == 0 && !ct.IsCancellationRequested
                                       && e is HttpRequestException or IOException)
             {
+                // Transient network failure on the first attempt; loop retries once.
             }
         }
     }

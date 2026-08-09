@@ -119,12 +119,12 @@ const setWebsocketServer = (websocketServer: WebSocketServer) => {
   if (_websocketServer != null) return;
   if (_serverModule != null) _serverModule.initializeWebsocketServer(websocketServer);
   _websocketServer = websocketServer;
-}
+};
 const setServerModule = (serverModule: any) => {
   if (_serverModule != null) return;
   if (_websocketServer != null) serverModule.initializeWebsocketServer(_websocketServer);
   _serverModule = serverModule;
-}
+};
 
 // Handle development vs production
 if (DEVELOPMENT) {

@@ -43,7 +43,10 @@ public class PreflightOrchestrator(
             {
                 prepared = await PreflightAsync(mode, candidates, session.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) { }
+            catch (OperationCanceledException)
+            {
+                // Preflight cancelled: session ended or was superseded.
+            }
             catch (Exception e)
             {
                 Log.Debug(e, "Preflight failed for {Type}/{Id}", type, id);
@@ -192,8 +195,9 @@ public class PreflightOrchestrator(
                 .FirstOrDefaultAsync(ct).ConfigureAwait(false);
             if (historyId is null) return;
 
+            var completedHistoryId = historyId.Value;
             var davItem = await ctx.Items.AsNoTracking()
-                .Where(x => x.HistoryItemId == historyId.Value
+                .Where(x => x.HistoryItemId == completedHistoryId
                             && x.Type == DavItem.ItemType.UsenetFile
                             && x.SubType == DavItem.ItemSubType.MultipartFile)
                 .OrderByDescending(x => x.FileSize ?? 0)

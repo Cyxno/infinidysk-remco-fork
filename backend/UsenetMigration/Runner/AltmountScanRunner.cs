@@ -433,9 +433,8 @@ public sealed class AltmountScanRunner(UsenetMigrationStore store, ConfigManager
         foreach (var (storeRef, list) in findings)
         {
             if (!byStoreRef.TryGetValue(storeRef, out var p)) continue;
-            foreach (var f in list)
-                if (!p.BaseReasons.Contains(f.Reason))
-                    p.BaseReasons.Add(f.Reason);
+            foreach (var f in list.Where(f => !p.BaseReasons.Contains(f.Reason)))
+                p.BaseReasons.Add(f.Reason);
         }
     }
 
@@ -619,17 +618,15 @@ public sealed class AltmountScanRunner(UsenetMigrationStore store, ConfigManager
 
     private static DateTime? DeriveReleaseDate(IReadOnlyList<AltmountFileMetadata> metas)
     {
-        foreach (var m in metas)
-            if (m.ReleaseDate > 0)
-                return DateTimeOffset.FromUnixTimeSeconds(m.ReleaseDate).UtcDateTime;
+        foreach (var m in metas.Where(m => m.ReleaseDate > 0))
+            return DateTimeOffset.FromUnixTimeSeconds(m.ReleaseDate).UtcDateTime;
         return null;
     }
 
     private static string? DeriveEncryption(IReadOnlyList<AltmountFileMetadata> metas)
     {
-        foreach (var m in metas)
-            if (m.Encryption != AltmountEncryption.None)
-                return EncryptionHeadInjector.EncryptionToString(m.Encryption);
+        foreach (var m in metas.Where(m => m.Encryption != AltmountEncryption.None))
+            return EncryptionHeadInjector.EncryptionToString(m.Encryption);
         return null;
     }
 

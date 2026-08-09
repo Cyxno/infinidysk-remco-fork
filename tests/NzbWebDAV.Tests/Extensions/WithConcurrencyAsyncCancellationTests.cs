@@ -16,6 +16,7 @@ public class WithConcurrencyAsyncCancellationTests
         {
             await foreach (var _ in tasks.WithConcurrencyAsync(2, cts.Token).ConfigureAwait(false))
             {
+                // Drain; the pre-cancelled token aborts enumeration before any item arrives.
             }
         });
     }

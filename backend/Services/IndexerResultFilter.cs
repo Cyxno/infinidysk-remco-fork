@@ -28,9 +28,8 @@ public static class IndexerResultFilter
             return items.ToList();
 
         var kept = new List<NewznabClient.NewznabItem>(items.Count);
-        foreach (var item in items)
+        foreach (var item in items.Where(item => !ShouldDrop(item, filter, now)))
         {
-            if (ShouldDrop(item, filter, now)) continue;
             kept.Add(item);
         }
 
@@ -70,12 +69,9 @@ public static class IndexerResultFilter
         //    determine age, we apply the grace conservatively: skip the rule entirely.
         if (f.MinGrabs > 0 && item.Grabs is { } g && g < f.MinGrabs)
         {
-            if (f.GrabsGraceHours > 0)
-            {
-                // Bypass when within grace window. Unknown age = treat as within grace.
-                if (age is null || age.Value.TotalHours < f.GrabsGraceHours)
-                    return false;
-            }
+            // Bypass when within grace window. Unknown age = treat as within grace.
+            if (f.GrabsGraceHours > 0 && (age is null || age.Value.TotalHours < f.GrabsGraceHours))
+                return false;
             return true;
         }
 

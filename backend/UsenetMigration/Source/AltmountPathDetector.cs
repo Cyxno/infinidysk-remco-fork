@@ -52,8 +52,8 @@ public static class AltmountPathDetector
             throw new ArgumentException("root cannot be the filesystem root.", nameof(root));
         }
 
-        var metadataRoot = Path.Combine(storeRoot, "metadata");
-        var configPath = Path.Combine(storeRoot, "config.yaml");
+        var metadataRoot = Path.Join(storeRoot, "metadata");
+        var configPath = Path.Join(storeRoot, "config.yaml");
 
         // This detector is reached through the API-key-guarded migration controller. A fixed
         // prefix would break supported custom bind mounts, and Advanced Connect already accepts

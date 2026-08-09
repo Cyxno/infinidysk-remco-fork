@@ -60,9 +60,12 @@ public class ZipTypesLevelsWithCrcRatioTests : ArchiveTests
         using var zipStream = new MemoryStream();
         using (var writer = CreateWriterWithLevel(zipStream, compressionType, compressionLevel))
         {
-            writer.Write($"file1_{sizeMb}MiB.txt", new MemoryStream(file1Data));
-            writer.Write($"data/file2_{sizeMb * 2}MiB.txt", new MemoryStream(file2Data));
-            writer.Write($"deep/nested/file3_{sizeMb * 3}MiB.txt", new MemoryStream(file3Data));
+            using var file1Stream = new MemoryStream(file1Data);
+            writer.Write($"file1_{sizeMb}MiB.txt", file1Stream);
+            using var file2Stream = new MemoryStream(file2Data);
+            writer.Write($"data/file2_{sizeMb * 2}MiB.txt", file2Stream);
+            using var file3Stream = new MemoryStream(file3Data);
+            writer.Write($"deep/nested/file3_{sizeMb * 3}MiB.txt", file3Stream);
         }
 
         // Calculate and output actual compression ratio
@@ -125,9 +128,10 @@ public class ZipTypesLevelsWithCrcRatioTests : ArchiveTests
 
         using (var writer = WriterFactory.OpenWriter(zipStream, ArchiveType.Zip, writerOptions))
         {
+            using var testDataStream = new MemoryStream(testData);
             writer.Write(
                 $"{compressionType}_level_{compressionLevel}_{sizeMb}MiB.txt",
-                new MemoryStream(testData)
+                testDataStream
             );
         }
 
@@ -186,9 +190,10 @@ public class ZipTypesLevelsWithCrcRatioTests : ArchiveTests
         using var zipStream = new MemoryStream();
         using (var writer = CreateWriterWithLevel(zipStream, compressionType, compressionLevel))
         {
+            using var testDataStream = new MemoryStream(testData);
             writer.Write(
                 $"{compressionType}_{compressionLevel}_{sizeMb}MiB.txt",
-                new MemoryStream(testData)
+                testDataStream
             );
         }
 

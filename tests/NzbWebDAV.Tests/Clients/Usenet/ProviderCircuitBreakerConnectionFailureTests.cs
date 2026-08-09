@@ -126,6 +126,7 @@ public class ProviderCircuitBreakerConnectionFailureTests
             await foreach (var _ in client.DecodedBodiesPipelinedAsync(
                                ["segment"], depth: 1, CancellationToken.None))
             {
+                // Drain the pipeline; the unreachable provider surfaces an IOException.
             }
         });
 

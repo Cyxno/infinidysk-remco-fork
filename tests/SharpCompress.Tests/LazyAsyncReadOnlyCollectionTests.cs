@@ -165,7 +165,7 @@ public class LazyAsyncReadOnlyCollectionTests
     public async Task CancellationToken_PassedToGetAsyncEnumerator_HonorsToken()
     {
         // Arrange
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         var source = new TrackingAsyncEnumerable<int>(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
         var collection = new LazyAsyncReadOnlyCollection<int>(source);
 
@@ -191,7 +191,7 @@ public class LazyAsyncReadOnlyCollectionTests
     public async Task CancellationDuringMoveNextAsync_ThrowsOperationCanceledException()
     {
         // Arrange
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         var source = CreateDelayedAsyncEnumerable(
             new[] { 1, 2, 3, 4, 5 },
             TimeSpan.FromMilliseconds(50)

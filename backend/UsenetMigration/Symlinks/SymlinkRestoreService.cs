@@ -288,7 +288,7 @@ public sealed class SymlinkRestoreService(UsenetMigrationStore store)
             throw new InvalidDataException("The selected symlink restore archive name is invalid.");
 
         var root = Path.GetFullPath(backupDir);
-        var path = Path.GetFullPath(Path.Combine(root, fileName));
+        var path = Path.GetFullPath(Path.Join(root, fileName));
         if (!IsWithinRoot(root, path))
             throw new InvalidDataException("The selected symlink restore archive is outside the configured backup directory.");
         return path;

@@ -14,7 +14,7 @@ public class DeleteQueueRecordRequest
     {
         RemoveFromClient = queueAction >= ArrConfig.QueueAction.Remove;
         Blocklist = queueAction >= ArrConfig.QueueAction.RemoveAndBlocklist;
-        SkipRedownload = !(queueAction >= ArrConfig.QueueAction.RemoveAndBlocklistAndSearch);
+        SkipRedownload = queueAction < ArrConfig.QueueAction.RemoveAndBlocklistAndSearch;
     }
 
     public Dictionary<string, string> GetQueryParams()

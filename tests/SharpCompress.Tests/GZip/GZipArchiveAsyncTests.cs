@@ -98,31 +98,33 @@ public class GZipArchiveAsyncTests : ArchiveTests
         );
         var archiveEntry = await archive.EntriesAsync.FirstAsync();
 
-        MemoryStream tarStream;
+        long size;
         await using (var entryStream = await archiveEntry.OpenEntryStreamAsync())
         {
-            tarStream = new MemoryStream();
+            using var tarStream = new MemoryStream();
             await entryStream.CopyToAsync(tarStream);
+            size = tarStream.Length;
         }
-        var size = tarStream.Length;
+        long secondSize;
         await using (var entryStream = await archiveEntry.OpenEntryStreamAsync())
         {
-            tarStream = new MemoryStream();
+            using var tarStream = new MemoryStream();
             await entryStream.CopyToAsync(tarStream);
+            secondSize = tarStream.Length;
         }
-        Assert.Equal(size, tarStream.Length);
+        Assert.Equal(size, secondSize);
         await using (var entryStream = await archiveEntry.OpenEntryStreamAsync())
         {
             var result = await TarArchive.IsTarFileAsync(entryStream);
             Assert.True(result);
         }
-        Assert.Equal(size, tarStream.Length);
+        Assert.Equal(size, secondSize);
         await using (var entryStream = await archiveEntry.OpenEntryStreamAsync())
         {
-            tarStream = new MemoryStream();
+            using var tarStream = new MemoryStream();
             await entryStream.CopyToAsync(tarStream);
+            Assert.Equal(size, tarStream.Length);
         }
-        Assert.Equal(size, tarStream.Length);
     }
 
     [Fact]
@@ -191,7 +193,8 @@ public class GZipArchiveAsyncTests : ArchiveTests
                 closeStream: true,
                 size: entryStream.Length
             );
-            await archive.SaveToAsync(new MemoryStream(), new GZipWriterOptions());
+            using var outputStream = new MemoryStream();
+            await archive.SaveToAsync(outputStream, new GZipWriterOptions());
         }
 
         Assert.True(entryStream.IsDisposed);

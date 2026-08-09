@@ -39,7 +39,10 @@ public class AnimeListMappingResolver
                 // cold start: wait briefly for the first load, then let it finish in the background
                 var load = LoadIfDueAsync(CancellationToken.None);
                 try { await load.WaitAsync(FirstLoadWait, ct).ConfigureAwait(false); }
-                catch (TimeoutException) { }
+                catch (TimeoutException)
+                {
+                    // First load exceeded the wait window; serve empty and keep loading in the background.
+                }
                 index = _index;
             }
         }

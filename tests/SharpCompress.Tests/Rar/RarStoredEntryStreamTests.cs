@@ -236,7 +236,7 @@ public class RarStoredEntryStreamTests : ArchiveTests
         Assert.NotNull(entry);
         var full = await ReadFullyAsync(entry);
 
-        await using var stream = await entry.OpenEntryStreamAsync();
+        await using var stream = await entry!.OpenEntryStreamAsync();
         Assert.IsType<StoredRarEntryStream>(stream);
         Assert.True(stream.CanSeek);
 
@@ -269,7 +269,7 @@ public class RarStoredEntryStreamTests : ArchiveTests
             }
 
             Assert.NotNull(entry);
-            await using var stream = await entry.OpenEntryStreamAsync();
+            await using var stream = await entry!.OpenEntryStreamAsync();
             Assert.IsType<StoredRarEntryStream>(stream);
             using var ms = new MemoryStream();
             await stream.CopyToAsync(ms);

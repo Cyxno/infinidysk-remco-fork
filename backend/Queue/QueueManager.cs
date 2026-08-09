@@ -715,8 +715,8 @@ public class QueueManager : IDisposable
             .Select(p => p.Host)
             .Where(h => !string.IsNullOrEmpty(h))
             .Distinct();
-        foreach (var host in configured)
-            if (!merged.ContainsKey(host)) merged[host] = 0;
+        foreach (var host in configured.Where(host => !merged.ContainsKey(host)))
+            merged[host] = 0;
         var payload = string.Join(",", merged.Select(kv => $"{kv.Key}={kv.Value}"));
         return $"{queueItemId}|{payload}";
     }

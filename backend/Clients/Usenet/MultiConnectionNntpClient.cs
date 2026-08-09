@@ -490,6 +490,14 @@ public class MultiConnectionNntpClient(
                 throw;
             }
 
+            // AcquireConnectionLockAsync either throws or returns a lock; this guard
+            // only documents that invariant for null-state analysis.
+            if (connectionLock is null)
+            {
+                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                throw new InvalidOperationException("Connection acquisition returned no lock.");
+            }
+
             T? result;
             var deferredCallback = new DeferredArticleBodyCallback();
             CancellationTokenSource? attemptCts = null;
@@ -639,7 +647,7 @@ public class MultiConnectionNntpClient(
             }
 
             // body and article
-            else if ((result?.Success ?? false) == false)
+            else if (!(result?.Success ?? false))
             {
                 circuitBreaker.RecordArticleNotFound();
                 deferredCallback.Discard();

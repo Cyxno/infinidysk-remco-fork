@@ -62,7 +62,7 @@ public class ProfilePlayController(
         {
             return await HandleAsync(token, nzbToken).ConfigureAwait(false);
         }
-        catch (Exception e)
+        catch (Exception e) when (!e.IsCancellationException(HttpContext.RequestAborted))
         {
             Log.Error(e, "Play handler crashed for token {Token} / nzbToken {NzbToken}", token, nzbToken);
             if (HttpContext.Response.HasStarted) return new EmptyResult();
@@ -296,7 +296,8 @@ public class ProfilePlayController(
                 case BatchOutcome.Winner:
                 case BatchOutcome.Cancelled:
                     resolvedNzoId.Value = batch.WinnerNzoId;
-                    return batch.Action!;
+                    return batch.Action
+                           ?? throw new InvalidOperationException("Winner/Cancelled batch without an action result.");
                 case BatchOutcome.BudgetTimeout:
                     return await ResolveExistingOrErrorAsync(entry, 503,
                         "Still processing. Retry the link in a few seconds.", 5,
@@ -809,7 +810,7 @@ public class ProfilePlayController(
             var nzb = await NzbDocument.LoadAsync(stream).ConfigureAwait(false);
             return nzb.Files.Any(f => SubtitlePreference.IsSubtitleFile(f.GetSubjectFileName()));
         }
-        catch
+        catch (Exception e) when (!e.IsCancellationException())
         {
             return false; // malformed NZB → no subtitle signal; never fail playback over this
         }

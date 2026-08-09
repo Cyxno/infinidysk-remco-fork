@@ -246,7 +246,7 @@ export function HistoryRow({ slot, onIsSelectedChanged, onIsRemovingChanged, onR
                 onConfirm={onConfirmRemoval}
                 onCancel={onCancelRemoval} />
         </>
-    )
+    );
 }
 
 export function Actions({

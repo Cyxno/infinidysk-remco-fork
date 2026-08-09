@@ -160,8 +160,8 @@ public class StreamTraceBufferTests
         var opens = events.Where(e => e.Kind == StreamTraceKind.RangeOpen.ToString()).ToList();
         var ends = events.Where(e => e.Kind == StreamTraceKind.RangeEnd.ToString()).ToList();
 
-        Assert.Equal(first.Value.Generation, opens[0].RangeGeneration);
-        Assert.Equal(second.Value.Generation, opens[1].RangeGeneration);
+        Assert.Equal(first!.Value.Generation, opens[0].RangeGeneration);
+        Assert.Equal(second!.Value.Generation, opens[1].RangeGeneration);
         Assert.Equal(second.Value.Generation, ends[0].RangeGeneration);
         Assert.Equal(90, ends[0].ProviderWaitMs);
         Assert.Equal(first.Value.Generation, ends[1].RangeGeneration);

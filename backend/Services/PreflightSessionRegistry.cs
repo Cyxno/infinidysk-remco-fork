@@ -13,7 +13,11 @@ public class PreflightSessionRegistry
         var prior = _sessions.AddOrUpdate(key, _ => cts, (_, _) => cts);
         if (!ReferenceEquals(prior, cts))
         {
-            try { prior.Cancel(); } catch (ObjectDisposedException) { }
+            try { prior.Cancel(); }
+            catch (ObjectDisposedException)
+            {
+                // A completed session may race the swap and already be disposed.
+            }
             prior.Dispose();
         }
         return new Session(this, key, cts);
@@ -33,7 +37,11 @@ public class PreflightSessionRegistry
         var key = MakeKey(profileToken, type, id);
         if (_sessions.TryGetValue(key, out var cts))
         {
-            try { cts.Cancel(); } catch (ObjectDisposedException) { }
+            try { cts.Cancel(); }
+            catch (ObjectDisposedException)
+            {
+                // Session completed and disposed between the lookup and Cancel.
+            }
         }
     }
 

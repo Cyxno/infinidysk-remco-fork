@@ -68,11 +68,14 @@ public class ZipTypesLevelsWithCrcRatioAsyncTests : ArchiveTests
             )
         )
         {
-            await writer.WriteAsync($"file1_{sizeMb}MiB.txt", new MemoryStream(file1Data));
-            await writer.WriteAsync($"data/file2_{sizeMb * 2}MiB.txt", new MemoryStream(file2Data));
+            using var file1Stream = new MemoryStream(file1Data);
+            await writer.WriteAsync($"file1_{sizeMb}MiB.txt", file1Stream);
+            using var file2Stream = new MemoryStream(file2Data);
+            await writer.WriteAsync($"data/file2_{sizeMb * 2}MiB.txt", file2Stream);
+            using var file3Stream = new MemoryStream(file3Data);
             await writer.WriteAsync(
                 $"deep/nested/file3_{sizeMb * 3}MiB.txt",
-                new MemoryStream(file3Data)
+                file3Stream
             );
         }
 
@@ -142,9 +145,10 @@ public class ZipTypesLevelsWithCrcRatioAsyncTests : ArchiveTests
             )
         )
         {
+            using var testDataStream = new MemoryStream(testData);
             await writer.WriteAsync(
                 $"{compressionType}_level_{compressionLevel}_{sizeMb}MiB.txt",
-                new MemoryStream(testData)
+                testDataStream
             );
         }
 
@@ -209,9 +213,10 @@ public class ZipTypesLevelsWithCrcRatioAsyncTests : ArchiveTests
             )
         )
         {
+            using var testDataStream = new MemoryStream(testData);
             await writer.WriteAsync(
                 $"{compressionType}_{compressionLevel}_{sizeMb}MiB.txt",
-                new MemoryStream(testData)
+                testDataStream
             );
         }
 

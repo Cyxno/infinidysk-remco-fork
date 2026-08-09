@@ -118,7 +118,7 @@ public class NntpClientPipelinedMappingTests
             result = item;
 
         Assert.NotNull(result);
-        Assert.False(result.Found);
+        Assert.False(result!.Found);
         Assert.Null(result.Stream);
         Assert.Equal("expected@example.com", result.SegmentId);
     }
@@ -137,7 +137,7 @@ public class NntpClientPipelinedMappingTests
             result = item;
 
         Assert.NotNull(result);
-        Assert.True(result.Found);
+        Assert.True(result!.Found);
         Assert.NotNull(result.Stream);
         await result.Stream!.DisposeAsync();
     }

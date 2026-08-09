@@ -91,7 +91,7 @@ public class LzwStreamAsyncTests : TestBase
         using var stream = File.OpenRead(testArchive);
         using var lzwStream = new LzwStream(stream);
 
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         var buffer = new byte[4096];
 
         cts.Cancel();

@@ -22,10 +22,10 @@ public sealed class DatabaseBackupStore
 
     private readonly object _gate = new();
 
-    public string BackupsRoot => Path.Combine(DavDatabaseContext.ConfigPath, "backups");
-    public string RestoreStagingRoot => Path.Combine(DavDatabaseContext.ConfigPath, RestoreStagingFolderName);
-    public string PendingRestorePath => Path.Combine(DavDatabaseContext.ConfigPath, PendingRestoreFileName);
-    public string LastRestoreReportPath => Path.Combine(BackupsRoot, LastRestoreReportFileName);
+    public string BackupsRoot => Path.Join(DavDatabaseContext.ConfigPath, "backups");
+    public string RestoreStagingRoot => Path.Join(DavDatabaseContext.ConfigPath, RestoreStagingFolderName);
+    public string PendingRestorePath => Path.Join(DavDatabaseContext.ConfigPath, PendingRestoreFileName);
+    public string LastRestoreReportPath => Path.Join(BackupsRoot, LastRestoreReportFileName);
 
     public void EnsureInitialized()
     {
@@ -71,14 +71,14 @@ public sealed class DatabaseBackupStore
     public string GetBackupDirectory(string backupId)
     {
         ValidateBackupId(backupId);
-        return Path.Combine(BackupsRoot, backupId);
+        return Path.Join(BackupsRoot, backupId);
     }
 
     public string CreateStaging(string kind)
     {
         EnsureInitialized();
         var id = $"{DateTime.UtcNow:yyyyMMdd-HHmmssfff}-{SanitizeKind(kind)}-{Guid.NewGuid().ToString("N")[..6]}";
-        var stagingPath = Path.Combine(BackupsRoot, $".tmp-{id}");
+        var stagingPath = Path.Join(BackupsRoot, $".tmp-{id}");
         if (Directory.Exists(stagingPath))
             Directory.Delete(stagingPath, recursive: true);
         Directory.CreateDirectory(stagingPath);
@@ -105,7 +105,7 @@ public sealed class DatabaseBackupStore
         var files = new List<DatabaseBackupFileEntry>();
         foreach (var sqlName in new[] { DbSqlName, MetricsSqlName, WardenSqlName })
         {
-            var path = Path.Combine(stagingPath, sqlName);
+            var path = Path.Join(stagingPath, sqlName);
             if (!File.Exists(path))
                 continue;
             files.Add(new DatabaseBackupFileEntry
@@ -132,7 +132,7 @@ public sealed class DatabaseBackupStore
 
         WriteManifestAtomic(stagingPath, manifest);
 
-        var finalPath = Path.Combine(BackupsRoot, backupId);
+        var finalPath = Path.Join(BackupsRoot, backupId);
         if (Directory.Exists(finalPath))
             throw new InvalidOperationException($"Backup id already exists: {backupId}");
 
@@ -272,7 +272,7 @@ public sealed class DatabaseBackupStore
 
     private DatabaseBackupManifest? ReadManifest(string backupId)
     {
-        var path = Path.Combine(GetBackupDirectory(backupId), ManifestFileName);
+        var path = Path.Join(GetBackupDirectory(backupId), ManifestFileName);
         if (!File.Exists(path))
             return null;
         var json = File.ReadAllText(path);
@@ -282,7 +282,7 @@ public sealed class DatabaseBackupStore
     private void WriteManifestAtomic(string backupDirectory, DatabaseBackupManifest manifest)
     {
         Directory.CreateDirectory(backupDirectory);
-        var path = Path.Combine(backupDirectory, ManifestFileName);
+        var path = Path.Join(backupDirectory, ManifestFileName);
         var temp = path + ".tmp";
         var json = JsonSerializer.Serialize(manifest, DatabaseBackupJson.Options);
         lock (_gate)

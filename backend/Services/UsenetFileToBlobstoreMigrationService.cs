@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Extensions;
 using NzbWebDAV.Websocket;
 using Serilog;
 
@@ -111,7 +112,7 @@ public class UsenetFileToBlobstoreMigrationService(WebsocketManager websocketMan
                     throw;
                 }
             }
-            catch (Exception e)
+            catch (Exception e) when (!e.IsCancellationException(ct))
             {
                 Log.Error(e, $"Error migrating usenet-file to blob-store: {e.Message}");
                 await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);

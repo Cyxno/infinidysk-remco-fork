@@ -46,7 +46,7 @@ public class DbBackupUploadController(DatabaseBackupStore store) : BaseApiContro
                 if (file.Length > MaxRestoreBytes)
                     throw PayloadTooLarge("SQL dump exceeds the restore size limit.");
 
-                var target = Path.Combine(stagingPath, DatabaseBackupStore.DbSqlName);
+                var target = Path.Join(stagingPath, DatabaseBackupStore.DbSqlName);
                 await using var stream = file.OpenReadStream();
                 await using var output = System.IO.File.Create(target);
                 await CopyWithLimitAsync(stream, output, MaxRestoreBytes, HttpContext.RequestAborted).ConfigureAwait(false);
@@ -111,7 +111,7 @@ public class DbBackupUploadController(DatabaseBackupStore store) : BaseApiContro
             if (entry.CompressedLength > 0 && entry.Length / entry.CompressedLength > MaxCompressionRatio)
                 throw PayloadTooLarge("Zip entry compression ratio exceeds the restore safety limit.");
 
-            var dest = Path.Combine(stagingPath, fileName);
+            var dest = Path.Join(stagingPath, fileName);
             await using var entryStream = entry.Open();
             await using var output = System.IO.File.Create(dest);
             extractedBytes += await CopyWithLimitAsync(
@@ -151,7 +151,7 @@ public class DbBackupUploadController(DatabaseBackupStore store) : BaseApiContro
         var found = false;
         foreach (var name in sqlFiles)
         {
-            var path = Path.Combine(stagingPath, name);
+            var path = Path.Join(stagingPath, name);
             if (!System.IO.File.Exists(path))
                 continue;
             found = true;
@@ -161,11 +161,10 @@ public class DbBackupUploadController(DatabaseBackupStore store) : BaseApiContro
             var sample = new string(sampleBuffer, 0, sampleLength);
             if (!sample.Contains("PRAGMA foreign_keys", StringComparison.OrdinalIgnoreCase)
                 && !sample.Contains("BEGIN", StringComparison.OrdinalIgnoreCase)
-                && !sample.Contains("CREATE", StringComparison.OrdinalIgnoreCase))
+                && !sample.Contains("CREATE", StringComparison.OrdinalIgnoreCase)
+                && !sample.Contains("CREATE TABLE", StringComparison.OrdinalIgnoreCase))
             {
-                if (!sample.Contains("CREATE TABLE", StringComparison.OrdinalIgnoreCase)
-                    && !sample.Contains("BEGIN", StringComparison.OrdinalIgnoreCase))
-                    throw new BadHttpRequestException($"{name} does not look like a SQLite SQL dump.");
+                throw new BadHttpRequestException($"{name} does not look like a SQLite SQL dump.");
             }
         }
 

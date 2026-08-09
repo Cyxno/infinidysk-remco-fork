@@ -32,10 +32,8 @@ public static class FilenameMatcher
     {
         var decomposed = s.ToLowerInvariant().Normalize(NormalizationForm.FormD);
         var sb = new StringBuilder(decomposed.Length);
-        foreach (var c in decomposed)
+        foreach (var c in decomposed.Where(c => CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark))
         {
-            if (CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.NonSpacingMark)
-                continue;
             if (LatinFolding.TryGetValue(c, out var rep))
                 sb.Append(rep);
             else

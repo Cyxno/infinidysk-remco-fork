@@ -1240,19 +1240,19 @@ public class ConfigManager
     public bool IsWatchtowerEnabled()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.WatchtowerEnabled));
-        return v != null ? bool.Parse(v) : false;
+        return v != null && bool.Parse(v);
     }
 
     public bool IsWatchtowerAutoThroughput()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.WatchtowerAutoThroughput));
-        return v != null ? bool.Parse(v) : false;
+        return v != null && bool.Parse(v);
     }
 
     public bool IsWatchtowerVerboseLoggingEnabled()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.WatchtowerVerboseLogging));
-        return v != null ? bool.Parse(v) : false;
+        return v != null && bool.Parse(v);
     }
 
     public string GetWatchtowerProfileToken()
@@ -1406,13 +1406,13 @@ public class ConfigManager
     public bool IsWatchtowerSeasonBundlesEnabled()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.WatchtowerSeasonBundles));
-        return v != null ? bool.Parse(v) : true;
+        return v == null || bool.Parse(v);
     }
 
     public bool IsWatchtowerSeasonBundleFallbackEnabled()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.WatchtowerSeasonBundleFallback));
-        return v != null ? bool.Parse(v) : false;
+        return v != null && bool.Parse(v);
     }
 
     public string GetWatchtowerSeasonBundleFallbackScope()

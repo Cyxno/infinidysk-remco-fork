@@ -43,7 +43,7 @@ public class DateAsyncTests
         // Assert
         Assert.That(dateResult.ResponseCode, Is.EqualTo(111), "Response code should be 111");
         Assert.That(dateResult.DateTime, Is.Not.Null, "DateTime should be populated");
-        Assert.That(dateResult.DateTime.Value.Offset, Is.EqualTo(TimeSpan.Zero), "DateTime should be UTC");
+        Assert.That(dateResult.DateTime!.Value.Offset, Is.EqualTo(TimeSpan.Zero), "DateTime should be UTC");
     }
 
     [Test]
@@ -66,7 +66,7 @@ public class DateAsyncTests
         Assert.That(dateResult.DateTime, Is.Not.Null, "DateTime should be populated");
 
         var now = DateTimeOffset.UtcNow;
-        var timeDifference = (now - dateResult.DateTime.Value).Duration();
+        var timeDifference = (now - dateResult.DateTime!.Value).Duration();
 
         // Server time should be within 5 minutes of current time
         Assert.That(timeDifference, Is.LessThan(TimeSpan.FromMinutes(5)),
@@ -152,7 +152,7 @@ public class DateAsyncTests
         Assert.That(dateResult2.DateTime, Is.Not.Null, "Second DateTime should be populated");
 
         // Second time should be equal to or greater than the first
-        Assert.That(dateResult2.DateTime.Value, Is.GreaterThanOrEqualTo(dateResult1.DateTime.Value),
+        Assert.That(dateResult2.DateTime!.Value, Is.GreaterThanOrEqualTo(dateResult1.DateTime!.Value),
             "Second DATE should be later than or equal to the first");
     }
 

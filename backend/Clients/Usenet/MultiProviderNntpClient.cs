@@ -477,13 +477,10 @@ public class MultiProviderNntpClient(
             else
             {
                 retryProviders = [primaryProvider, .. fallbackProviders];
-                if (response == null || !definitiveMiss)
+                if ((response == null || !definitiveMiss) && response != null)
                 {
-                    if (response != null)
-                    {
-                        lastException = ExceptionDispatchInfo.Capture(
-                            new UsenetUnexpectedResponseException(segmentId, response.ResponseMessage));
-                    }
+                    lastException = ExceptionDispatchInfo.Capture(
+                        new UsenetUnexpectedResponseException(segmentId, response.ResponseMessage));
                 }
             }
 
@@ -1090,10 +1087,8 @@ public class MultiProviderNntpClient(
     {
         if (priorMisses is not { Count: > 0 }) return null;
         List<(string Host, SegmentFetch.FetchStatus Reason)>? cross = null;
-        foreach (var miss in priorMisses)
+        foreach (var miss in priorMisses.Where(miss => !string.Equals(miss.Host, rescuer, StringComparison.OrdinalIgnoreCase)))
         {
-            if (string.Equals(miss.Host, rescuer, StringComparison.OrdinalIgnoreCase))
-                continue;
             (cross ??= []).Add(miss);
         }
         return cross;

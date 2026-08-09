@@ -35,7 +35,7 @@ public class DatabaseRestoreStageTask(
             var manifest = store.Get(backupId)
                 ?? throw new FileNotFoundException($"Backup not found: {backupId}");
             var backupDir = store.GetBackupDirectory(backupId);
-            var dbSql = Path.Combine(backupDir, DatabaseBackupStore.DbSqlName);
+            var dbSql = Path.Join(backupDir, DatabaseBackupStore.DbSqlName);
             if (!File.Exists(dbSql))
                 throw new InvalidOperationException("Backup is missing db.sql and cannot be restored.");
 
@@ -56,22 +56,22 @@ public class DatabaseRestoreStageTask(
             var stagedFiles = new List<string>();
 
             await ImportOptionalAsync(
-                Path.Combine(backupDir, DatabaseBackupStore.DbSqlName),
-                Path.Combine(store.RestoreStagingRoot, "db.sqlite"),
+                Path.Join(backupDir, DatabaseBackupStore.DbSqlName),
+                Path.Join(store.RestoreStagingRoot, "db.sqlite"),
                 requireMigrationsHistory: true,
                 "main database",
                 stagedFiles).ConfigureAwait(false);
 
             await ImportOptionalAsync(
-                Path.Combine(backupDir, DatabaseBackupStore.MetricsSqlName),
-                Path.Combine(store.RestoreStagingRoot, "metrics.sqlite"),
+                Path.Join(backupDir, DatabaseBackupStore.MetricsSqlName),
+                Path.Join(store.RestoreStagingRoot, "metrics.sqlite"),
                 requireMigrationsHistory: false,
                 "metrics database",
                 stagedFiles).ConfigureAwait(false);
 
             await ImportOptionalAsync(
-                Path.Combine(backupDir, DatabaseBackupStore.WardenSqlName),
-                Path.Combine(store.RestoreStagingRoot, "warden.db"),
+                Path.Join(backupDir, DatabaseBackupStore.WardenSqlName),
+                Path.Join(store.RestoreStagingRoot, "warden.db"),
                 requireMigrationsHistory: false,
                 "warden database",
                 stagedFiles).ConfigureAwait(false);

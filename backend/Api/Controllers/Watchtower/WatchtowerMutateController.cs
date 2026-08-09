@@ -158,9 +158,8 @@ public class WatchtowerMutateController(DavDatabaseClient dbClient) : BaseApiCon
         var claimed = await dbClient.Ctx.WantedItems
             .Where(w => w.Provenance.Contains(srcId))
             .ToListAsync(ct).ConfigureAwait(false);
-        foreach (var item in claimed)
+        foreach (var item in claimed.Where(item => dbClient.Ctx.Entry(item).State != EntityState.Deleted))
         {
-            if (dbClient.Ctx.Entry(item).State == EntityState.Deleted) continue;
             var prov = WtJson.ReadStrings(item.Provenance);
             prov.Remove(srcId);
             if (prov.Count == 0)
@@ -282,9 +281,8 @@ public class WatchtowerMutateController(DavDatabaseClient dbClient) : BaseApiCon
             var items = await dbClient.Ctx.WantedItems
                 .Where(w => chunk.Contains(w.Key))
                 .ToListAsync(ct).ConfigureAwait(false);
-            foreach (var item in items)
+            foreach (var item in items.Where(item => dbClient.Ctx.Entry(item).State != EntityState.Deleted))
             {
-                if (dbClient.Ctx.Entry(item).State == EntityState.Deleted) continue;
                 await WtReconcile.RemoveWithChildrenAsync(dbClient.Ctx, item, now, ct).ConfigureAwait(false);
             }
         }
@@ -319,9 +317,8 @@ public class WatchtowerMutateController(DavDatabaseClient dbClient) : BaseApiCon
             var items = await dbClient.Ctx.WantedItems
                 .Where(w => chunk.Contains(w.Key))
                 .ToListAsync(ct).ConfigureAwait(false);
-            foreach (var item in items)
+            foreach (var item in items.Where(item => dbClient.Ctx.Entry(item).State != EntityState.Deleted))
             {
-                if (dbClient.Ctx.Entry(item).State == EntityState.Deleted) continue;
                 await WtReconcile.RemoveWithChildrenAsync(dbClient.Ctx, item, now, ct).ConfigureAwait(false);
             }
             await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);

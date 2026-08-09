@@ -465,6 +465,7 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         }
         catch (OperationCanceledException)
         {
+            // Workers stop via cancellation during soft-stop.
         }
 
         ladder.Prune(dead.ToArray());
@@ -599,7 +600,7 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         else
         {
             // Assume at least ~2 MB/s per connection until we have a real sample.
-            var bootstrap = (long)(Math.Max(1, connections) * 2_000_000 * 2.0 * seconds);
+            var bootstrap = (long)(Math.Max(1, connections) * 2_000_000.0 * 2.0 * seconds);
             est = Math.Max(profile.PerLevelBytes, bootstrap);
         }
 
@@ -661,11 +662,9 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         var confirmTight = result.ConfirmDeltaPct is <= 5;
         var confirmLoose = result.ConfirmDeltaPct is > 20;
 
-        string confidence;
-        if ((!confirmTight && result.WrappedPool) || maxCv > 0.15)
-            confidence = "medium";
-        else
-            confidence = "high";
+        var confidence = (!confirmTight && result.WrappedPool) || maxCv > 0.15
+            ? "medium"
+            : "high";
 
         // Budget ran out after a found plateau: downgrade high → medium at most.
         if (result.BudgetLimited && confidence == "high")
@@ -773,6 +772,7 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         }
         catch (OperationCanceledException)
         {
+            // Cancellation ends the delay early; callers re-check the token.
         }
     }
 

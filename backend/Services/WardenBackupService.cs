@@ -231,7 +231,10 @@ public partial class WardenBackupService : BackgroundService
                 return msg.Length > 120 ? msg[..120] : msg;
             }
         }
-        catch { }
+        catch
+        {
+            // Body isn't GitHub's JSON error shape; fall back to the reason phrase.
+        }
         return resp.ReasonPhrase ?? "request failed";
     }
 

@@ -43,7 +43,7 @@ public static class GoXmlEscaper
                     break;
                 default:
                     if (IsInCharacterRange(rune.Value))
-                        sb.Append(rune.ToString());
+                        sb.Append(rune);
                     else
                         sb.Append('�');
                     break;

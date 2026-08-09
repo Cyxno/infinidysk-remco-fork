@@ -648,7 +648,8 @@ public class CompressionProviderTests
         )
         {
             var data = Encoding.UTF8.GetBytes("zip async provider usage");
-            writer.Write("test.txt", new MemoryStream(data));
+            using var writeStream = new MemoryStream(data);
+            writer.Write("test.txt", writeStream);
         }
 
         var trackingProvider = new TrackingCompressionProvider(new DeflateCompressionProvider());
@@ -701,7 +702,8 @@ public class CompressionProviderTests
         )
         {
             var data = Encoding.UTF8.GetBytes("hook provider");
-            writer.Write("test.txt", new MemoryStream(data));
+            using var entryStream = new MemoryStream(data);
+            writer.Write("test.txt", entryStream);
         }
 
         trackingProvider.PreCalls.Should().BeGreaterThan(0);

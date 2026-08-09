@@ -44,12 +44,10 @@ public static class MetadataTreeWalker
             }
 
             Array.Sort(subdirs, StringComparer.Ordinal);
-            foreach (var sub in subdirs)
+            // Do not recurse into directory symlinks (cycle / escape risk).
+            foreach (var sub in subdirs.Where(sub =>
+                         !IsExcludedDir(sub) && Directory.ResolveLinkTarget(sub, returnFinalTarget: false) is null))
             {
-                if (IsExcludedDir(sub)) continue;
-                // Do not recurse into directory symlinks (cycle / escape risk).
-                if (Directory.ResolveLinkTarget(sub, returnFinalTarget: false) is not null)
-                    continue;
                 stack.Push(sub);
             }
 
@@ -65,11 +63,9 @@ public static class MetadataTreeWalker
             }
 
             Array.Sort(files, StringComparer.Ordinal);
-            foreach (var file in files)
+            // Skip .meta entries that are themselves symlinks (e.g. .ids shards).
+            foreach (var file in files.Where(file => File.ResolveLinkTarget(file, returnFinalTarget: false) is null))
             {
-                // Skip .meta entries that are themselves symlinks (e.g. .ids shards).
-                if (File.ResolveLinkTarget(file, returnFinalTarget: false) is not null)
-                    continue;
                 yield return file;
             }
         }

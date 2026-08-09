@@ -372,7 +372,7 @@ public class TarReaderTests : ReaderTests
         var archiveFullPath = Path.Combine(TEST_ARCHIVES_PATH, "Tar.tar");
         using Stream stream = File.OpenRead(archiveFullPath);
         using var reader = ReaderFactory.OpenReader(stream);
-        var memoryStream = new MemoryStream();
+        using var memoryStream = new MemoryStream();
 
         Assert.True(reader.MoveToNextEntry());
         Assert.True(reader.MoveToNextEntry());
@@ -444,7 +444,7 @@ public class TarReaderTests : ReaderTests
         var archiveFullPath = Path.Combine(TEST_ARCHIVES_PATH, "TarCorrupted.tar");
         using Stream stream = File.OpenRead(archiveFullPath);
         using var reader = ReaderFactory.OpenReader(stream);
-        var memoryStream = new MemoryStream();
+        using var memoryStream = new MemoryStream();
 
         Assert.True(reader.MoveToNextEntry());
         Assert.True(reader.MoveToNextEntry());

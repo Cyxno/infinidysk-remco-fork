@@ -199,8 +199,9 @@ public class ZipArchiveAsyncTests : ArchiveTests
                 closeStream: true,
                 size: entryStream.Length
             );
+            using var outputStream = new MemoryStream();
             await archive.SaveToAsync(
-                new MemoryStream(),
+                outputStream,
                 new ZipWriterOptions(CompressionType.Deflate)
             );
         }

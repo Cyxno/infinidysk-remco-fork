@@ -80,11 +80,8 @@ public class DatabaseStoreSymlinkCollection(
 
         if (isSymlinkFolder)
         {
-            foreach (var category in configManager.GetApiCategories())
+            foreach (var category in configManager.GetApiCategories().Where(category => !childNames!.Contains(category)))
             {
-                if (childNames!.Contains(category))
-                    continue;
-
                 var item = new BaseStoreEmptyCollection(category);
                 if (!DeletedFiles.IsDeleted(item.Name))
                     yield return item;

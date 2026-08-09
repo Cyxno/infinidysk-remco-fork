@@ -24,7 +24,7 @@ public class BlobStore
         var nextTwo = guidStr.Substring(2, 2);
         var fileName = id.ToString(); // With hyphens for readability
 
-        return Path.Combine(ConfigPath, "blobs", firstTwo, nextTwo, fileName);
+        return Path.Join(ConfigPath, "blobs", firstTwo, nextTwo, fileName);
     }
 
     private static FileStream OpenBlobWrite(Guid id)

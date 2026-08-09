@@ -596,7 +596,7 @@ public class LzmaStreamTests
     [Fact]
     public void TestLzmaEncodingAccuracy()
     {
-        var input = new MemoryStream(LzmaResultData);
+        using var input = new MemoryStream(LzmaResultData);
         var compressed = new MemoryStream();
         var lzmaEncodingStream = LzmaStream.Create(
             LzmaEncoderProperties.Default,
@@ -607,7 +607,7 @@ public class LzmaStreamTests
         lzmaEncodingStream.Close();
         compressed.Position = 0;
 
-        var output = new MemoryStream();
+        using var output = new MemoryStream();
         DecompressLzmaStream(
             lzmaEncodingStream.Properties,
             compressed,

@@ -249,7 +249,10 @@ public class HealthCheckService : BackgroundService
             progressHook.ProgressChanged += (_, progress) =>
             {
                 try { statCts?.CancelAfter(HealthCheckProgressTimeout); }
-                catch (ObjectDisposedException) { }
+                catch (ObjectDisposedException)
+                {
+                    // statCts may already be disposed when a progress event races teardown.
+                }
                 var message = $"{davItem.Id}|{progress}";
                 debounce(() => _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, message));
             };
@@ -1197,9 +1200,8 @@ public class HealthCheckService : BackgroundService
     {
         lock (_missingSegmentIds)
         {
-            foreach (var segmentId in segmentIds)
-                if (_missingSegmentIds.Contains(segmentId))
-                    throw new UsenetArticleNotFoundException(segmentId);
+            foreach (var segmentId in segmentIds.Where(segmentId => _missingSegmentIds.Contains(segmentId)))
+                throw new UsenetArticleNotFoundException(segmentId);
         }
     }
 }

@@ -211,7 +211,8 @@ public class ExceptionMiddlewareTests
     {
         var lifetimeFeature = new TestHttpRequestLifetimeFeature();
         var context = CreateContext(hasStarted: false, lifetimeFeature);
-        context.Response.Body = new MemoryStream();
+        using var responseBody = new MemoryStream();
+        context.Response.Body = responseBody;
         var middleware = CreateMiddleware(
             _ => throw new StreamingReadTimeoutException(
                 "WebDAV read exceeded the 5s streaming-read-timeout while waiting for the Usenet backend."));

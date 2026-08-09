@@ -48,9 +48,8 @@ public class DeleteWebdavItemController(DavDatabaseClient dbClient, ConfigManage
         if (byPath is not null) return byPath;
 
         var current = DavItem.Root;
-        foreach (var raw in parts)
+        foreach (var name in parts.Select(Uri.UnescapeDataString))
         {
-            var name = Uri.UnescapeDataString(raw);
             var child = await dbClient.GetDirectoryChildAsync(current.Id, name, ct).ConfigureAwait(false);
             if (child is null) return null;
             current = child;

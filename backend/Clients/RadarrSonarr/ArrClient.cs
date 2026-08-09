@@ -77,7 +77,7 @@ public class ArrClient(string host, string apiKey)
 
     protected async Task<T> GetRoot<T>(string rootPath, CancellationToken ct = default)
     {
-        var request = new HttpRequestMessage(HttpMethod.Get, $"{Host}{rootPath}");
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{Host}{rootPath}");
         using var response = await SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
@@ -86,7 +86,7 @@ public class ArrClient(string host, string apiKey)
 
     private async Task<T?> GetRootOrNull<T>(string rootPath, CancellationToken ct) where T : class
     {
-        var request = new HttpRequestMessage(HttpMethod.Get, $"{Host}{rootPath}");
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{Host}{rootPath}");
         using var response = await SendAsync(request, ct);
         if (response.StatusCode == HttpStatusCode.NotFound) return null;
         response.EnsureSuccessStatusCode();
@@ -96,7 +96,7 @@ public class ArrClient(string host, string apiKey)
 
     protected async Task<T> Post<T>(string path, object body, CancellationToken ct = default)
     {
-        var request = new HttpRequestMessage(HttpMethod.Post, GetRequestUri(path));
+        using var request = new HttpRequestMessage(HttpMethod.Post, GetRequestUri(path));
         var jsonBody = JsonSerializer.Serialize(body);
         request.Content = new StringContent(jsonBody, new MediaTypeHeaderValue("application/json"));
         using var response = await SendAsync(request, ct);
@@ -107,7 +107,7 @@ public class ArrClient(string host, string apiKey)
 
     protected async Task<HttpStatusCode> Delete(string path, Dictionary<string, string>? queryParams = null, CancellationToken ct = default)
     {
-        var request = new HttpRequestMessage(HttpMethod.Delete, GetRequestUri(path, queryParams));
+        using var request = new HttpRequestMessage(HttpMethod.Delete, GetRequestUri(path, queryParams));
         using var response = await SendAsync(request, ct);
         return response.StatusCode;
     }

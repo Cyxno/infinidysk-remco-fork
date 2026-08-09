@@ -131,8 +131,8 @@ public class DownloadingNntpClientStatGateTests
     [Fact]
     public async Task StatAsync_PrimaryQueueContext_AdmittedBeforeSecondaryWaiters()
     {
-        var holdSecondary = new ManualResetEventSlim(false);
-        var holdPrimary = new ManualResetEventSlim(false);
+        using var holdSecondary = new ManualResetEventSlim(false);
+        using var holdPrimary = new ManualResetEventSlim(false);
         var entered = new ConcurrentQueue<string>();
         var fake = new SelectiveBlockingStatNntpClient(
             segmentId =>

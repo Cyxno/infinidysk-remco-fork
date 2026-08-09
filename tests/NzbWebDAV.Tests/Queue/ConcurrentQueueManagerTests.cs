@@ -114,7 +114,7 @@ public sealed class ConcurrentQueueManagerTests : IAsyncLifetime
     [Fact]
     public async Task ProcessQueueAsync_WithWorkerCountTwo_RunsTwoItemsConcurrently()
     {
-        var gate = new ManualResetEventSlim(false);
+        using var gate = new ManualResetEventSlim(false);
         var item1 = CreateQueueItem("a.nzb", "movies", "JobA");
         var item2 = CreateQueueItem("b.nzb", "movies", "JobB");
 
@@ -173,7 +173,7 @@ public sealed class ConcurrentQueueManagerTests : IAsyncLifetime
     [Fact]
     public async Task ProcessQueueAsync_SkipsSameMountKeyWhileSiblingIsActive()
     {
-        var gate = new ManualResetEventSlim(false);
+        using var gate = new ManualResetEventSlim(false);
         var first = CreateQueueItem("dup1.nzb", "tv", "SameJob");
         var sibling = CreateQueueItem("dup2.nzb", "tv", "SameJob");
         var other = CreateQueueItem("other.nzb", "tv", "OtherJob");
@@ -231,7 +231,7 @@ public sealed class ConcurrentQueueManagerTests : IAsyncLifetime
     [Fact]
     public async Task ProcessQueueAsync_DoesNotSpinAfterAwakenWhileWorkerRuns()
     {
-        var gate = new ManualResetEventSlim(false);
+        using var gate = new ManualResetEventSlim(false);
         var item = CreateQueueItem("spin.nzb", "movies", "SpinJob");
 
         await using (var ctx = new DavDatabaseContext(_options))

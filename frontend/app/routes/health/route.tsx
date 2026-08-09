@@ -61,7 +61,7 @@ export default function Health({ loaderData }: Route.ComponentProps) {
             }
         };
         refetchData();
-    }, [queueItems, setQueueState])
+    }, [queueItems, setQueueState]);
 
     // events
     const onHealthItemStatus = useCallback(async (message: string) => {

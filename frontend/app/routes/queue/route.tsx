@@ -57,7 +57,7 @@ export async function loader({ request }: Route.LoaderArgs) {
         historyPage: historyPage,
         queuePageSize,
         historyPageSize,
-    }
+    };
 }
 
 export default function Queue(props: Route.ComponentProps) {

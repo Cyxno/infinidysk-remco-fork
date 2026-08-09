@@ -254,7 +254,7 @@ internal static class SymlinkPathGuard
                          [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
                          StringSplitOptions.RemoveEmptyEntries))
             {
-                current = Path.Combine(current, segment);
+                current = Path.Join(current, segment);
                 EnsureRealDirectory(current, "Symlink parent directory");
             }
         }

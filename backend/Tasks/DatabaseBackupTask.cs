@@ -44,18 +44,18 @@ public class DatabaseBackupTask(
 
             await DumpIfExistsAsync(
                 DavDatabaseContext.DatabaseFilePath,
-                Path.Combine(stagingPath, DatabaseBackupStore.DbSqlName),
+                Path.Join(stagingPath, DatabaseBackupStore.DbSqlName),
                 "main database").ConfigureAwait(false);
 
             await DumpIfExistsAsync(
                 MetricsDbContext.DatabaseFilePath,
-                Path.Combine(stagingPath, DatabaseBackupStore.MetricsSqlName),
+                Path.Join(stagingPath, DatabaseBackupStore.MetricsSqlName),
                 "metrics database").ConfigureAwait(false);
 
-            var wardenPath = Path.Combine(DavDatabaseContext.ConfigPath, "warden.db");
+            var wardenPath = Path.Join(DavDatabaseContext.ConfigPath, "warden.db");
             await DumpIfExistsAsync(
                 wardenPath,
-                Path.Combine(stagingPath, DatabaseBackupStore.WardenSqlName),
+                Path.Join(stagingPath, DatabaseBackupStore.WardenSqlName),
                 "warden database").ConfigureAwait(false);
 
             var lastMigration = await ReadLastMainMigrationAsync().ConfigureAwait(false);

@@ -76,7 +76,7 @@ public class SharpCompressStreamEdgeAsyncTest
     {
         var ms = new MemoryStream(new byte[] { 1, 2, 3, 4, 5 });
         var stream = SharpCompressStream.CreateNonDisposing(ms);
-        var destination = new MemoryStream();
+        using var destination = new MemoryStream();
         await stream.CopyToAsync(destination).ConfigureAwait(false);
         Assert.Equal(new byte[] { 1, 2, 3, 4, 5 }, destination.ToArray());
     }
@@ -86,7 +86,7 @@ public class SharpCompressStreamEdgeAsyncTest
     {
         var ms = new MemoryStream(new byte[] { 1, 2, 3, 4, 5 });
         var stream = SharpCompressStream.CreateNonDisposing(ms);
-        var destination = new MemoryStream();
+        using var destination = new MemoryStream();
         await stream.CopyToAsync(destination, 2).ConfigureAwait(false);
         Assert.Equal(new byte[] { 1, 2, 3, 4, 5 }, destination.ToArray());
     }

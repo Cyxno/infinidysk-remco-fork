@@ -75,9 +75,8 @@ public static class UsenetProviderIdentity
             .ToHashSet();
 
         var assigned = false;
-        foreach (var provider in config.Providers)
+        foreach (var provider in config.Providers.Where(provider => provider.ProviderId == Guid.Empty))
         {
-            if (provider.ProviderId != Guid.Empty) continue;
             provider.ProviderId = AssignProviderId(provider, taken);
             assigned = true;
         }
@@ -154,10 +153,8 @@ public static class UsenetProviderIdentity
             .Concat(unusedExisting.Select(p => p.ProviderId))
             .ToHashSet();
 
-        foreach (var provider in incoming.Providers)
+        foreach (var provider in incoming.Providers.Where(provider => provider.ProviderId == Guid.Empty))
         {
-            if (provider.ProviderId != Guid.Empty) continue;
-
             var matchIndex = unusedExisting.FindIndex(p =>
                 string.Equals(p.Host, provider.Host, StringComparison.OrdinalIgnoreCase)
                 && p.Port == provider.Port

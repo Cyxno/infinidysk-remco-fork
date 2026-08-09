@@ -182,9 +182,9 @@ public class GetWatchtowerController(DavDatabaseClient dbClient, ConfigManager c
 
         var showAll = !hasState && !hasQ;
         var result = new List<GetWatchtowerResponse.ItemDto>();
-        foreach (var ex in expanders.OrderBy(e => e.Title, StringComparer.OrdinalIgnoreCase))
+        foreach (var ex in expanders.OrderBy(e => e.Title, StringComparer.OrdinalIgnoreCase)
+                     .Where(ex => showAll || relevant.Contains(ex.Key)))
         {
-            if (!showAll && !relevant.Contains(ex.Key)) continue;
             tally.TryGetValue(ex.Key, out var n);
             n ??= new int[3];
             result.Add(new GetWatchtowerResponse.ItemDto

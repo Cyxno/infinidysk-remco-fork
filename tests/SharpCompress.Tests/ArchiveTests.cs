@@ -342,7 +342,7 @@ public class ArchiveTests : ReaderTests
         {
             if (!entry.IsDirectory)
             {
-                var memory = new MemoryStream();
+                using var memory = new MemoryStream();
                 entry.WriteTo(memory);
 
                 memory.Position = 0;
@@ -484,7 +484,8 @@ public class ArchiveTests : ReaderTests
         {
             foreach (var kvp in files)
             {
-                writer.Write(kvp.Key, new MemoryStream(kvp.Value));
+                using var entryStream = new MemoryStream(kvp.Value);
+                writer.Write(kvp.Key, entryStream);
             }
         }
         return zipStream;

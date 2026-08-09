@@ -329,7 +329,8 @@ public class AsyncParityAndCancellationTests : TestBase
             )
         )
         {
-            writer.Write("large.bin", new MemoryStream(new byte[64 * 1024]));
+            using var entryStream = new MemoryStream(new byte[64 * 1024]);
+            writer.Write("large.bin", entryStream);
         }
         return stream.ToArray();
     }

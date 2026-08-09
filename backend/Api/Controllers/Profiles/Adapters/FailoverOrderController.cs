@@ -45,9 +45,8 @@ public class FailoverOrderController(
         var groups = new Dictionary<(string Type, string Id), List<string>>();
         var seen = new Dictionary<(string Type, string Id), HashSet<string>>();
         var matched = 0;
-        foreach (var id in ids)
+        foreach (var entry in ids.Select(cache.Get))
         {
-            var entry = cache.Get(id);
             if (entry is null || !entry.ProfileToken.FixedTimeEquals(token))
                 continue;
 

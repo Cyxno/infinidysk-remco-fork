@@ -320,8 +320,10 @@ public class ZipReaderTests : ReaderTests
             )
         )
         {
-            zipWriter.Write(expected[0].Item1, new MemoryStream(expected[0].Item2));
-            zipWriter.Write(expected[1].Item1, new MemoryStream(expected[1].Item2));
+            using var expected0Stream = new MemoryStream(expected[0].Item2);
+            zipWriter.Write(expected[0].Item1, expected0Stream);
+            using var expected1Stream = new MemoryStream(expected[1].Item2);
+            zipWriter.Write(expected[1].Item1, expected1Stream);
         }
 
         stream = new MemoryStream(memory.ToArray());
@@ -335,7 +337,7 @@ public class ZipReaderTests : ReaderTests
         {
             using (var entry = zipReader.OpenEntryStream())
             {
-                var tempStream = new MemoryStream();
+                using var tempStream = new MemoryStream();
                 const int bufSize = 0x1000;
                 var buf = new byte[bufSize];
                 var bytesRead = 0;
@@ -464,7 +466,7 @@ public class ZipReaderTests : ReaderTests
         using var reader = ReaderFactory.OpenReader(stream);
         while (reader.MoveToNextEntry())
         {
-            var target = new MemoryStream();
+            using var target = new MemoryStream();
             reader.OpenEntryStream().CopyTo(target);
         }
     }
@@ -663,7 +665,7 @@ public class ZipReaderTests : ReaderTests
             {
                 count++;
                 Assert.Equal(0, reader.Entry.Size);
-                var outStream = new MemoryStream();
+                using var outStream = new MemoryStream();
                 reader.WriteEntryTo(outStream);
                 Assert.Equal(0, outStream.Length);
             }

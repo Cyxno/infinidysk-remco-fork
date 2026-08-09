@@ -76,7 +76,11 @@ public class BasicStreamTests
             EncryptedPartContext() with { IsEncrypted = false });
 
         var failure = await Assert.ThrowsAsync<IncompleteMultipartPartException>(
-            () => stream.CopyToAsync(new MemoryStream()));
+            () =>
+            {
+                using var destination = new MemoryStream();
+                return stream.CopyToAsync(destination);
+            });
 
         Assert.Contains("ended 3 bytes early", failure.Message, StringComparison.Ordinal);
         Assert.Contains("delivered 2 of 5 expected bytes", failure.Message, StringComparison.Ordinal);
@@ -93,7 +97,11 @@ public class BasicStreamTests
             EncryptedPartContext());
 
         var failure = await Assert.ThrowsAsync<IncompleteMultipartPartException>(
-            () => stream.CopyToAsync(new MemoryStream()));
+            () =>
+            {
+                using var destination = new MemoryStream();
+                return stream.CopyToAsync(destination);
+            });
 
         Assert.Contains("ended 1022 bytes early", failure.Message, StringComparison.Ordinal);
         Assert.Contains("encrypted: True", failure.Message, StringComparison.Ordinal);
@@ -106,7 +114,11 @@ public class BasicStreamTests
             new MemoryStream(Encoding.ASCII.GetBytes("ab")), 5, "part-1", "test.bin");
 
         await Assert.ThrowsAsync<IncompleteMultipartPartException>(
-            () => stream.CopyToAsync(new MemoryStream()));
+            () =>
+            {
+                using var destination = new MemoryStream();
+                return stream.CopyToAsync(destination);
+            });
     }
 
     private static MultipartPartContext EncryptedPartContext() => new()

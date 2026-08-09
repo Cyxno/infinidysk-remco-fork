@@ -242,9 +242,9 @@ public sealed class SymlinkRewriter(UsenetMigrationStore store, ConfigManager co
     private static string BuildBackupPath(string backupDir, DateTime createdAt, string archivePrefix)
     {
         var stem = $"{archivePrefix}{createdAt:yyyyMMdd-HHmmss}";
-        var path = Path.Combine(backupDir, $"{stem}.tar.gz");
+        var path = Path.Join(backupDir, $"{stem}.tar.gz");
         for (var suffix = 2; File.Exists(path); suffix++)
-            path = Path.Combine(backupDir, $"{stem}-{suffix}.tar.gz");
+            path = Path.Join(backupDir, $"{stem}-{suffix}.tar.gz");
         return path;
     }
 

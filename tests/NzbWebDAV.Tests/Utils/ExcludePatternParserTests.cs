@@ -11,7 +11,7 @@ public class ExcludePatternParserTests
         var parsed = ExcludePatternParser.Parse(@"\.iso$");
         Assert.NotNull(parsed);
         Assert.Matches(parsed!.Value.Regex, "FILE.ISO");
-        Assert.DoesNotMatch(parsed.Value.Regex, "FILE.mkv");
+        Assert.DoesNotMatch(parsed!.Value.Regex, "FILE.mkv");
     }
 
     [Fact]
@@ -22,7 +22,7 @@ public class ExcludePatternParserTests
         Assert.NotNull(bare);
         Assert.NotNull(wrapped);
         Assert.Equal(bare!.Value.Key, wrapped!.Value.Key);
-        Assert.Matches(wrapped.Value.Regex, "Movie.ISO");
+        Assert.Matches(wrapped!.Value.Regex, "Movie.ISO");
     }
 
     [Fact]
@@ -33,7 +33,7 @@ public class ExcludePatternParserTests
         Assert.NotNull(ms);
         Assert.NotNull(sm);
         Assert.Equal(ms!.Value.Key, sm!.Value.Key);
-        Assert.True((ms.Value.Regex.Options & RegexOptions.Multiline) != 0);
+        Assert.True((ms!.Value.Regex.Options & RegexOptions.Multiline) != 0);
         Assert.True((ms.Value.Regex.Options & RegexOptions.Singleline) != 0);
     }
 
@@ -54,6 +54,6 @@ public class ExcludePatternParserTests
         var parsed = ExcludePatternParser.Parse("/foo/gu");
         Assert.NotNull(parsed);
         Assert.Equal("foo ", parsed!.Value.Key);
-        Assert.Matches(parsed.Value.Regex, "FOO");
+        Assert.Matches(parsed!.Value.Regex, "FOO");
     }
 }

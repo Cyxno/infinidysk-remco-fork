@@ -27,7 +27,7 @@ public class SeekableSharpCompressStreamAsyncTest
         var ms = new MemoryStream(new byte[] { 1, 2, 3, 4, 5 });
         var stream = new SeekableSharpCompressStream(ms);
         var buffer = new byte[5];
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         int bytesRead = await stream
             .ReadAsync(buffer, 0, buffer.Length, cts.Token)
             .ConfigureAwait(false);
@@ -62,7 +62,7 @@ public class SeekableSharpCompressStreamAsyncTest
         var ms = new MemoryStream();
         var stream = new SeekableSharpCompressStream(ms);
         var data = new byte[] { 1, 2, 3, 4, 5 };
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         await stream.WriteAsync(data, 0, data.Length, cts.Token).ConfigureAwait(false);
         Assert.Equal(data, ms.ToArray());
     }
@@ -83,7 +83,7 @@ public class SeekableSharpCompressStreamAsyncTest
     {
         var sourceMs = new MemoryStream(new byte[] { 1, 2, 3, 4, 5 });
         var stream = new SeekableSharpCompressStream(sourceMs);
-        var destinationMs = new MemoryStream();
+        using var destinationMs = new MemoryStream();
         await stream.CopyToAsync(destinationMs, 4096).ConfigureAwait(false);
         Assert.Equal(new byte[] { 1, 2, 3, 4, 5 }, destinationMs.ToArray());
     }
@@ -143,7 +143,7 @@ public partial class SeekableSharpCompressStreamMemoryAsyncTest
         var ms = new MemoryStream(new byte[] { 1, 2, 3, 4, 5 });
         var stream = new SeekableSharpCompressStream(ms);
         var buffer = new byte[5];
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         int bytesRead = await stream.ReadAsync(buffer, cts.Token).ConfigureAwait(false);
         Assert.Equal(5, bytesRead);
         Assert.Equal(new byte[] { 1, 2, 3, 4, 5 }, buffer);
@@ -165,7 +165,7 @@ public partial class SeekableSharpCompressStreamMemoryAsyncTest
         var ms = new MemoryStream();
         var stream = new SeekableSharpCompressStream(ms);
         var data = new byte[] { 1, 2, 3, 4, 5 };
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         await stream.WriteAsync(data, cts.Token).ConfigureAwait(false);
         Assert.Equal(data, ms.ToArray());
     }

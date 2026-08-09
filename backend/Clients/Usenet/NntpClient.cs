@@ -496,10 +496,9 @@ public abstract class NntpClient : INntpClient
         if (value.Length is < 3 or > 248) return false;
         if (value[0] == '@' || value[^1] == '@' || !value.Contains('@')) return false;
         if (value.Contains('<') || value.Contains('>')) return false;
-        foreach (var character in value)
+        foreach (var character in value.Where(character => char.IsWhiteSpace(character) || char.IsControl(character)))
         {
-            if (char.IsWhiteSpace(character) || char.IsControl(character))
-                return false;
+            return false;
         }
 
         return true;

@@ -14,7 +14,8 @@ public class YencStreamIntegrationTests
         var segmentId = "8mthBMhpfyOJFM7OPe2RsZhm@CAtZlPkA1OiI.WLo";
 
         using var client = new UsenetClient();
-        var cancellationToken = new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token;
+        using var timeoutSource = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var cancellationToken = timeoutSource.Token;
 
         // Connect to server
         await client.ConnectAsync(Credentials.Host, 563, true, cancellationToken);
@@ -69,7 +70,8 @@ public class YencStreamIntegrationTests
         };
 
         using var client = new UsenetClient();
-        var cancellationToken = new CancellationTokenSource(TimeSpan.FromSeconds(60)).Token;
+        using var timeoutSource = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var cancellationToken = timeoutSource.Token;
 
         // Connect and authenticate
         await client.ConnectAsync(Credentials.Host, 563, true, cancellationToken);
@@ -104,7 +106,8 @@ public class YencStreamIntegrationTests
         var segmentId = "8mthBMhpfyOJFM7OPe2RsZhm@CAtZlPkA1OiI.WLo";
 
         using var client = new UsenetClient();
-        var cancellationToken = new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token;
+        using var timeoutSource = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var cancellationToken = timeoutSource.Token;
 
         await client.ConnectAsync(Credentials.Host, 563, true, cancellationToken);
 

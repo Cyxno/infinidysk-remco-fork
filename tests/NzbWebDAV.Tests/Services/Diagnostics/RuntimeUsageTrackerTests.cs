@@ -81,7 +81,7 @@ public class RuntimeUsageTrackerTests
 
         Record(tracker, cpuMs: 20000, wallMs: 5000, at: busyAt); // every core pegged
         for (var i = 1; i <= RuntimeUsageTracker.WindowSampleCount; i++)
-            Record(tracker, cpuMs: 0, wallMs: 5000, at: Origin.AddSeconds(5 * i));
+            Record(tracker, cpuMs: 0, wallMs: 5000, at: Origin.AddSeconds(5.0 * i));
 
         var snapshot = tracker.Snapshot();
 

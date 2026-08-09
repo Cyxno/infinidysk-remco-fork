@@ -209,7 +209,10 @@ public sealed class UsenetMigrationController(
             query = query.Where(r => r.Verdict == verdict &&
                                      !r.VerdictReasons.Contains(VerdictReason.AlreadyMigrated));
         if (included is not null)
-            query = query.Where(r => r.Included == included.Value);
+        {
+            var includedFilter = included.Value;
+            query = query.Where(r => r.Included == includedFilter);
+        }
         if (!string.IsNullOrEmpty(targetCategory))
             query = query.Where(r => r.TargetCategory == targetCategory);
         if (!string.IsNullOrWhiteSpace(q))
@@ -977,7 +980,7 @@ public sealed class UsenetMigrationController(
         try
         {
             Directory.CreateDirectory(path);
-            var probe = Path.Combine(path, $".nzbdav-probe-{Guid.NewGuid():N}");
+            var probe = Path.Join(path, $".nzbdav-probe-{Guid.NewGuid():N}");
             System.IO.File.WriteAllText(probe, "ok");
             System.IO.File.Delete(probe);
         }

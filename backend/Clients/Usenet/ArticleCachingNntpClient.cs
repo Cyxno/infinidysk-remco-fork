@@ -369,6 +369,7 @@ public class ArticleCachingNntpClient(
         }
         catch
         {
+            // Previous response failures surface on their own task; only ordering matters here.
         }
 
         return await response.ConfigureAwait(false);
@@ -405,6 +406,7 @@ public class ArticleCachingNntpClient(
         }
         catch
         {
+            // Callback exceptions must not fault transport tasks (streaming lifecycle invariant).
         }
     }
 
@@ -501,7 +503,7 @@ public class ArticleCachingNntpClient(
         // Use SHA256 hash of segment ID to create a valid filename
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(segmentId));
         var filename = Convert.ToHexString(hash);
-        return Path.Combine(_cacheDir, filename);
+        return Path.Join(_cacheDir, filename);
     }
 
     public override void Dispose()
