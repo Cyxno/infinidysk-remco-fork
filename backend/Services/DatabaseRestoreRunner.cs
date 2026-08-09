@@ -42,7 +42,7 @@ public static class DatabaseRestoreRunner
             return;
 
         if (intent.StagedFiles.Count == 0 ||
-            !intent.StagedFiles.All(name => File.Exists(Path.Combine(store.RestoreStagingRoot, name))))
+            !intent.StagedFiles.All(name => File.Exists(Path.Join(store.RestoreStagingRoot, name))))
         {
             Log.Warning(
                 "Pending restore intent {BackupId} is missing staged files; discarding and continuing startup",
@@ -56,7 +56,7 @@ public static class DatabaseRestoreRunner
         try
         {
             progress.BeginStep(RollbackStepId);
-            var rollbackDir = Path.Combine(
+            var rollbackDir = Path.Join(
                 store.GetBackupDirectory(intent.PreRestoreBackupId),
                 DatabaseBackupStore.RollbackFolderName);
             Directory.CreateDirectory(rollbackDir);
@@ -71,7 +71,7 @@ public static class DatabaseRestoreRunner
                 await CheckpointAndVacuumAsync(livePath, cancellationToken).ConfigureAwait(false);
                 SqliteConnection.ClearAllPools();
 
-                var rollbackPath = Path.Combine(rollbackDir, Path.GetFileName(livePath));
+                var rollbackPath = Path.Join(rollbackDir, Path.GetFileName(livePath));
                 MoveDatabaseFiles(livePath, rollbackPath);
                 movedAway.Add((livePath, rollbackPath));
             }
@@ -82,7 +82,7 @@ public static class DatabaseRestoreRunner
             foreach (var stagedName in intent.StagedFiles)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var stagedPath = Path.Combine(store.RestoreStagingRoot, stagedName);
+                var stagedPath = Path.Join(store.RestoreStagingRoot, stagedName);
                 var livePath = ResolveLivePath(stagedName);
                 Directory.CreateDirectory(Path.GetDirectoryName(livePath)!);
                 File.Move(stagedPath, livePath, overwrite: false);
@@ -102,7 +102,7 @@ public static class DatabaseRestoreRunner
                     {
                         pre.Files.Add(new DatabaseBackupFileEntry
                         {
-                            Name = Path.Combine(DatabaseBackupStore.RollbackFolderName, Path.GetFileName(file))
+                            Name = Path.Join(DatabaseBackupStore.RollbackFolderName, Path.GetFileName(file))
                                 .Replace('\\', '/'),
                             Bytes = new FileInfo(file).Length,
                         });
@@ -163,7 +163,7 @@ public static class DatabaseRestoreRunner
     {
         "db.sqlite" => DavDatabaseContext.DatabaseFilePath,
         "metrics.sqlite" => MetricsDbContext.DatabaseFilePath,
-        "warden.db" => Path.Combine(DavDatabaseContext.ConfigPath, "warden.db"),
+        "warden.db" => Path.Join(DavDatabaseContext.ConfigPath, "warden.db"),
         _ => throw new InvalidOperationException($"Unknown staged database file: {stagedFileName}"),
     };
 
@@ -303,6 +303,6 @@ public static class DatabaseRestoreRunner
         var firstTwo = guidStr[..2];
         var nextTwo = guidStr.Substring(2, 2);
         var fileName = id.ToString();
-        return Path.Combine(DavDatabaseContext.ConfigPath, "blobs", firstTwo, nextTwo, fileName);
+        return Path.Join(DavDatabaseContext.ConfigPath, "blobs", firstTwo, nextTwo, fileName);
     }
 }

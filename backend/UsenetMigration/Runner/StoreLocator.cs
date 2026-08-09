@@ -60,7 +60,7 @@ public static class StoreLocator
             return null;
 
         var suffix = normalised[(idx + 1)..].Replace('/', Path.DirectorySeparatorChar);
-        var candidate = Path.Combine(storeRoot, suffix);
+        var candidate = Path.Join(storeRoot, suffix);
         return File.Exists(candidate) ? candidate : null;
     }
 

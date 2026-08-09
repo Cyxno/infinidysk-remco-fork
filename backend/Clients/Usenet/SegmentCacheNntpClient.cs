@@ -278,7 +278,7 @@ public sealed class SegmentCacheNntpClient : WrappingNntpClient
         }
     }
 
-    private string BlobPath(string hash) => Path.Combine(_dir, hash[..2], hash);
+    private string BlobPath(string hash) => Path.Join(_dir, hash[..2], hash);
 
     private static string Hash(string id)
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(id)));

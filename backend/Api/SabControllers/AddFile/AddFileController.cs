@@ -308,7 +308,7 @@ public class AddFileController(
             if (!Directory.Exists(backupRoot))
                 Directory.CreateDirectory(backupRoot);
 
-            var destDir = Path.GetFullPath(Path.Combine(backupRootPrefix, category));
+            var destDir = Path.GetFullPath(Path.Join(backupRootPrefix, category));
             if (!destDir.StartsWith(backupRootPrefix, StringComparison.Ordinal))
                 throw new ArgumentException("The NZB backup category must stay within the configured directory.");
             if (!Directory.Exists(destDir))
@@ -318,14 +318,14 @@ public class AddFileController(
                 ? destDir
                 : destDir + Path.DirectorySeparatorChar;
             var safeFileName = GetSafeBackupFileName(id, fileName);
-            var destPath = Path.GetFullPath(Path.Combine(destDirPrefix, safeFileName));
+            var destPath = Path.GetFullPath(Path.Join(destDirPrefix, safeFileName));
             if (!destPath.StartsWith(destDirPrefix, StringComparison.Ordinal))
                 throw new ArgumentException("The NZB backup file must stay within its category directory.");
             var counter = 2;
             while (System.IO.File.Exists(destPath))
             {
                 var safeBaseName = Path.GetFileNameWithoutExtension(safeFileName);
-                destPath = Path.GetFullPath(Path.Combine(destDirPrefix, $"{safeBaseName} ({counter}).nzb"));
+                destPath = Path.GetFullPath(Path.Join(destDirPrefix, $"{safeBaseName} ({counter}).nzb"));
                 if (!destPath.StartsWith(destDirPrefix, StringComparison.Ordinal))
                     throw new ArgumentException("The NZB backup file must stay within its category directory.");
                 counter++;

@@ -980,7 +980,7 @@ public sealed class UsenetMigrationController(
         try
         {
             Directory.CreateDirectory(path);
-            var probe = Path.Combine(path, $".nzbdav-probe-{Guid.NewGuid():N}");
+            var probe = Path.Join(path, $".nzbdav-probe-{Guid.NewGuid():N}");
             System.IO.File.WriteAllText(probe, "ok");
             System.IO.File.Delete(probe);
         }

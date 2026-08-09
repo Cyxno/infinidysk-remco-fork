@@ -448,7 +448,7 @@ public partial class Program
         var hasPendingRestore = pendingRestore is not null
             && pendingRestore.StagedFiles.Count > 0
             && pendingRestore.StagedFiles.All(name =>
-                File.Exists(Path.Combine(backupStore.RestoreStagingRoot, name)));
+                File.Exists(Path.Join(backupStore.RestoreStagingRoot, name)));
         if (pendingRestore is not null && !hasPendingRestore)
         {
             Log.Warning(
