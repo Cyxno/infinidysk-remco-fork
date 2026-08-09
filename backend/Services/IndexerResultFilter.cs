@@ -70,12 +70,9 @@ public static class IndexerResultFilter
         //    determine age, we apply the grace conservatively: skip the rule entirely.
         if (f.MinGrabs > 0 && item.Grabs is { } g && g < f.MinGrabs)
         {
-            if (f.GrabsGraceHours > 0)
-            {
-                // Bypass when within grace window. Unknown age = treat as within grace.
-                if (age is null || age.Value.TotalHours < f.GrabsGraceHours)
-                    return false;
-            }
+            // Bypass when within grace window. Unknown age = treat as within grace.
+            if (f.GrabsGraceHours > 0 && (age is null || age.Value.TotalHours < f.GrabsGraceHours))
+                return false;
             return true;
         }
 

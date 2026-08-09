@@ -136,10 +136,11 @@ public class ExternalIdResolver(AnimeListMappingResolver animeList)
                     }
                     else if (int.TryParse(ext, out var id)) tvdbId ??= id;
                 }
-                else if (site.Equals("thetvdb/series", StringComparison.OrdinalIgnoreCase))
+                else if (site.Equals("thetvdb/series", StringComparison.OrdinalIgnoreCase)
+                    && int.TryParse(ext, out var id))
                 {
                     // fallback id source; never carries season
-                    if (int.TryParse(ext, out var id)) tvdbId ??= id;
+                    tvdbId ??= id;
                 }
                 // ignore "thetvdb/season" — its ext is the upstream row id, not a season number
             }

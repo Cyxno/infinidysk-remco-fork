@@ -662,11 +662,9 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         var confirmTight = result.ConfirmDeltaPct is <= 5;
         var confirmLoose = result.ConfirmDeltaPct is > 20;
 
-        string confidence;
-        if ((!confirmTight && result.WrappedPool) || maxCv > 0.15)
-            confidence = "medium";
-        else
-            confidence = "high";
+        var confidence = (!confirmTight && result.WrappedPool) || maxCv > 0.15
+            ? "medium"
+            : "high";
 
         // Budget ran out after a found plateau: downgrade high → medium at most.
         if (result.BudgetLimited && confidence == "high")

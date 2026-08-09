@@ -211,13 +211,11 @@ public class WebsocketManager
                 foreach (var element in subArray.EnumerateArray())
                 {
                     var name = element.GetString();
-                    if (name is not null && WebsocketTopic.TryGetByName(name, out var topic) && topic is not null)
+                    if (name is not null && WebsocketTopic.TryGetByName(name, out var topic) && topic is not null
+                        && session.AddSubscription(topic))
                     {
-                        if (session.AddSubscription(topic))
-                        {
-                            _subscriberCounts.AddOrUpdate(topic, 1, (_, c) => c + 1);
-                            ReplayStateForNewSubscription(session, topic);
-                        }
+                        _subscriberCounts.AddOrUpdate(topic, 1, (_, c) => c + 1);
+                        ReplayStateForNewSubscription(session, topic);
                     }
                 }
             }
@@ -227,10 +225,10 @@ public class WebsocketManager
                 foreach (var element in unsubArray.EnumerateArray())
                 {
                     var name = element.GetString();
-                    if (name is not null && WebsocketTopic.TryGetByName(name, out var topic) && topic is not null)
+                    if (name is not null && WebsocketTopic.TryGetByName(name, out var topic) && topic is not null
+                        && session.RemoveSubscription(topic))
                     {
-                        if (session.RemoveSubscription(topic))
-                            _subscriberCounts.AddOrUpdate(topic, 0, (_, c) => Math.Max(0, c - 1));
+                        _subscriberCounts.AddOrUpdate(topic, 0, (_, c) => Math.Max(0, c - 1));
                     }
                 }
             }

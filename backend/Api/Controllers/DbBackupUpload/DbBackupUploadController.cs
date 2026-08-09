@@ -161,11 +161,10 @@ public class DbBackupUploadController(DatabaseBackupStore store) : BaseApiContro
             var sample = new string(sampleBuffer, 0, sampleLength);
             if (!sample.Contains("PRAGMA foreign_keys", StringComparison.OrdinalIgnoreCase)
                 && !sample.Contains("BEGIN", StringComparison.OrdinalIgnoreCase)
-                && !sample.Contains("CREATE", StringComparison.OrdinalIgnoreCase))
+                && !sample.Contains("CREATE", StringComparison.OrdinalIgnoreCase)
+                && !sample.Contains("CREATE TABLE", StringComparison.OrdinalIgnoreCase))
             {
-                if (!sample.Contains("CREATE TABLE", StringComparison.OrdinalIgnoreCase)
-                    && !sample.Contains("BEGIN", StringComparison.OrdinalIgnoreCase))
-                    throw new BadHttpRequestException($"{name} does not look like a SQLite SQL dump.");
+                throw new BadHttpRequestException($"{name} does not look like a SQLite SQL dump.");
             }
         }
 

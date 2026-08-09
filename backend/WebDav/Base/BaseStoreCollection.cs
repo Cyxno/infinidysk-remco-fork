@@ -93,16 +93,14 @@ public abstract class BaseStoreCollection : IStoreCollection
         // 1. CreateItemAsync is first called with an empty input stream to create an empty file.
         // 2. CreateItemAsync is then called again with actual input stream and overwrite set to true.
         // 3. If step #2 fails above, DeleteItemAsync is then called to remove the empty file created in step #1.
-        if (existingItem is null)
+        // This handles step #1 in the note above.
+        if (existingItem is null &&
+            SupportsEmptyFileStaging &&
+            await probingStream.IsEmptyAsync().ConfigureAwait(false))
         {
-            // This handles step #1 in the note above.
-            if (SupportsEmptyFileStaging &&
-                await probingStream.IsEmptyAsync().ConfigureAwait(false))
-            {
-                var emptyFile = new BaseStoreEmptyFile(name);
-                EmptyFileManager.Add(emptyFile);
-                return new StoreItemResult(DavStatusCode.Created, emptyFile);
-            }
+            var emptyFile = new BaseStoreEmptyFile(name);
+            EmptyFileManager.Add(emptyFile);
+            return new StoreItemResult(DavStatusCode.Created, emptyFile);
         }
 
         // this handles step #2 in the note above.

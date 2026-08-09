@@ -647,7 +647,7 @@ public class MultiConnectionNntpClient(
             }
 
             // body and article
-            else if ((result?.Success ?? false) == false)
+            else if (!(result?.Success ?? false))
             {
                 circuitBreaker.RecordArticleNotFound();
                 deferredCallback.Discard();

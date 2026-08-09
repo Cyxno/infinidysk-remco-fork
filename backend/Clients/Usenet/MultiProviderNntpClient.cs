@@ -477,13 +477,10 @@ public class MultiProviderNntpClient(
             else
             {
                 retryProviders = [primaryProvider, .. fallbackProviders];
-                if (response == null || !definitiveMiss)
+                if ((response == null || !definitiveMiss) && response != null)
                 {
-                    if (response != null)
-                    {
-                        lastException = ExceptionDispatchInfo.Capture(
-                            new UsenetUnexpectedResponseException(segmentId, response.ResponseMessage));
-                    }
+                    lastException = ExceptionDispatchInfo.Capture(
+                        new UsenetUnexpectedResponseException(segmentId, response.ResponseMessage));
                 }
             }
 

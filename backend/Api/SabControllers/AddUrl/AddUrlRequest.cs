@@ -262,16 +262,9 @@ public class AddUrlRequest() : AddFileRequest
                 .ConfigureAwait(false);
         }
 
-        IPAddress[] addresses;
-
-        if (IPAddress.TryParse(host, out var literalAddress))
-        {
-            addresses = [literalAddress];
-        }
-        else
-        {
-            addresses = await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
-        }
+        IPAddress[] addresses = IPAddress.TryParse(host, out var literalAddress)
+            ? [literalAddress]
+            : await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
 
         if (addresses.Length == 0)
             throw new HttpRequestException($"The host `{host}` did not resolve to an IP address.");
@@ -288,16 +281,9 @@ public class AddUrlRequest() : AddFileRequest
         int port,
         CancellationToken cancellationToken)
     {
-        IPAddress[] addresses;
-
-        if (IPAddress.TryParse(host, out var literalAddress))
-        {
-            addresses = [literalAddress];
-        }
-        else
-        {
-            addresses = await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
-        }
+        IPAddress[] addresses = IPAddress.TryParse(host, out var literalAddress)
+            ? [literalAddress]
+            : await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
 
         if (addresses.Length == 0)
             throw new HttpRequestException($"The host `{host}` did not resolve to an IP address.");
