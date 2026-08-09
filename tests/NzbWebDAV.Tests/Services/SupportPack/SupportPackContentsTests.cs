@@ -434,7 +434,7 @@ public sealed class SupportPackContentsTests : IDisposable
                 TimeSpan.FromMilliseconds(10),
                 TimeSpan.FromSeconds(5),
                 activeReads: 1,
-                at.AddSeconds(5 * i));
+                at.AddSeconds(5.0 * i));
         }
 
         var entries = await ReadPackEntriesAsync(
