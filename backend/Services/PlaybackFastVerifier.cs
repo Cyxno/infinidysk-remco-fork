@@ -174,7 +174,7 @@ public class PlaybackFastVerifier
         var indices = new SortedSet<int>();
         for (var i = 0; i < n; i++)
         {
-            var idx = (int)Math.Round(i * (segs.Count - 1) / (double)(n - 1));
+            var idx = (int)Math.Round(i * (segs.Count - 1.0) / (n - 1));
             indices.Add(idx);
         }
         return indices.Select(i => segs[i].MessageId).ToList();

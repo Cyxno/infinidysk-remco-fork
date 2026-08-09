@@ -599,7 +599,7 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         else
         {
             // Assume at least ~2 MB/s per connection until we have a real sample.
-            var bootstrap = (long)(Math.Max(1, connections) * 2_000_000 * 2.0 * seconds);
+            var bootstrap = (long)(Math.Max(1, connections) * 2_000_000.0 * 2.0 * seconds);
             est = Math.Max(profile.PerLevelBytes, bootstrap);
         }
 
