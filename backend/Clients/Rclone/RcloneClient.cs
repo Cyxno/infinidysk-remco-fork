@@ -162,7 +162,7 @@ public class RcloneClient
     ) where T : RcloneResponse, new()
     {
         var url = $"{host}/{endpoint}";
-        var request = new HttpRequestMessage(HttpMethod.Post, url);
+        using var request = new HttpRequestMessage(HttpMethod.Post, url);
 
         if (body != null)
         {

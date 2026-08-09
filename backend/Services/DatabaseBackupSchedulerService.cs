@@ -40,6 +40,9 @@ public class DatabaseBackupSchedulerService : BackgroundService
 
             var old = Interlocked.Exchange(ref _rescheduleCts, new CancellationTokenSource());
             old.Cancel();
+            // Not disposed: ExecuteAsync may access .Token on this source after the swap, which
+            // throws ObjectDisposedException once disposed. Cancelling wakes the loop; the old
+            // source is then unreferenced and GC'd.
         };
     }
 
