@@ -14,14 +14,20 @@ public class ArrField
     [JsonPropertyName("value")]
     public JsonElement? ValueJson { get; set; }
 
-    public object? Value => ValueJson?.ValueKind switch
+    public object? Value
     {
-        null => null,
-        JsonValueKind.Null => null,
-        JsonValueKind.String => ValueJson?.ToString(),
-        JsonValueKind.Number => ValueJson?.GetInt64(),
-        JsonValueKind.True => true,
-        JsonValueKind.False => false,
-        _ => ValueJson?.GetRawText(),
-    };
+        get
+        {
+            if (ValueJson is not { } json) return null;
+            return json.ValueKind switch
+            {
+                JsonValueKind.Null => null,
+                JsonValueKind.String => json.ToString(),
+                JsonValueKind.Number => json.GetInt64(),
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                _ => json.GetRawText(),
+            };
+        }
+    }
 }
