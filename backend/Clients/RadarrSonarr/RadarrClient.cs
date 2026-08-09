@@ -53,7 +53,7 @@ public class RadarrClient(string host, string apiKey) : ArrClient(host, apiKey)
         {
             var movie = await GetMovieOrNullAsync(movieId, ct).ConfigureAwait(false);
             var movieFile = movie?.MovieFile;
-            if (movieFile?.Path == symlinkOrStrmPath)
+            if (movieFile is not null && movieFile.Path == symlinkOrStrmPath)
                 return movieFile.Id;
             SymlinkOrStrmToMovieIdCache.TryRemove(cacheKey, out _);
         }
@@ -67,7 +67,7 @@ public class RadarrClient(string host, string apiKey) : ArrClient(host, apiKey)
             var movieFile = movie.MovieFile;
             if (movieFile?.Path != null)
                 SymlinkOrStrmToMovieIdCache[(Host, movieFile.Path)] = movie.Id;
-            if (movieFile?.Path == symlinkOrStrmPath)
+            if (movieFile is not null && movieFile.Path == symlinkOrStrmPath)
                 result = movieFile.Id;
         }
 

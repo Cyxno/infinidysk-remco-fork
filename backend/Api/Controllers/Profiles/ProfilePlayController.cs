@@ -296,7 +296,8 @@ public class ProfilePlayController(
                 case BatchOutcome.Winner:
                 case BatchOutcome.Cancelled:
                     resolvedNzoId.Value = batch.WinnerNzoId;
-                    return batch.Action!;
+                    return batch.Action
+                           ?? throw new InvalidOperationException("Winner/Cancelled batch without an action result.");
                 case BatchOutcome.BudgetTimeout:
                     return await ResolveExistingOrErrorAsync(entry, 503,
                         "Still processing. Retry the link in a few seconds.", 5,

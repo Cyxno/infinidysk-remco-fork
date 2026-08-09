@@ -209,7 +209,10 @@ public sealed class UsenetMigrationController(
             query = query.Where(r => r.Verdict == verdict &&
                                      !r.VerdictReasons.Contains(VerdictReason.AlreadyMigrated));
         if (included is not null)
-            query = query.Where(r => r.Included == included.Value);
+        {
+            var includedFilter = included.Value;
+            query = query.Where(r => r.Included == includedFilter);
+        }
         if (!string.IsNullOrEmpty(targetCategory))
             query = query.Where(r => r.TargetCategory == targetCategory);
         if (!string.IsNullOrWhiteSpace(q))

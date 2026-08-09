@@ -100,9 +100,10 @@ public class MultipartFileSizeRepairService : BackgroundService
                 continue;
             }
 
+            var publishedSize = size.Value;
             var updated = await ctx.Items
                 .Where(i => i.Id == item.Id && i.FileSize == long.MaxValue)
-                .ExecuteUpdateAsync(s => s.SetProperty(i => i.FileSize, size.Value), ct)
+                .ExecuteUpdateAsync(s => s.SetProperty(i => i.FileSize, publishedSize), ct)
                 .ConfigureAwait(false);
             if (updated > 0)
                 repaired++;

@@ -148,19 +148,20 @@ public class DatabaseStoreCollection(
     private async Task PruneEmptyHistoryAsync(Guid? historyItemId, CancellationToken ct)
     {
         if (historyItemId is null) return;
+        var historyId = historyItemId.Value;
         var stillReferenced = await dbClient.Ctx.Items
             .AsNoTracking()
-            .AnyAsync(x => x.HistoryItemId == historyItemId.Value, ct)
+            .AnyAsync(x => x.HistoryItemId == historyId, ct)
             .ConfigureAwait(false);
         if (stillReferenced) return;
 
         var history = await dbClient.Ctx.HistoryItems
-            .FirstOrDefaultAsync(h => h.Id == historyItemId.Value, ct)
+            .FirstOrDefaultAsync(h => h.Id == historyId, ct)
             .ConfigureAwait(false);
         if (history is null) return;
 
         dbClient.Ctx.HistoryItems.Remove(history);
         await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);
-        _ = websocketManager.SendMessage(WebsocketTopic.HistoryItemRemoved, historyItemId.Value.ToString());
+        _ = websocketManager.SendMessage(WebsocketTopic.HistoryItemRemoved, historyId.ToString());
     }
 }

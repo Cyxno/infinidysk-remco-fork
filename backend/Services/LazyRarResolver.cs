@@ -336,6 +336,7 @@ public class LazyRarResolver(INntpClient usenetClient, ConfigManager configManag
         var size = MultipartFileSizeReconciler.TryGetPublishedSize(meta);
         if (size is null) return;
 
+        var publishedSize = size.Value;
         if (ReconcileFileSizeAsync is not null)
         {
             await ReconcileFileSizeAsync(fileBlobId, meta, ct).ConfigureAwait(false);
@@ -346,14 +347,14 @@ public class LazyRarResolver(INntpClient usenetClient, ConfigManager configManag
         {
             await using var ctx = new DavDatabaseContext();
             var updated = await ctx.Items
-                .Where(i => i.FileBlobId == fileBlobId && i.FileSize != size.Value)
-                .ExecuteUpdateAsync(s => s.SetProperty(i => i.FileSize, size.Value), ct)
+                .Where(i => i.FileBlobId == fileBlobId && i.FileSize != publishedSize)
+                .ExecuteUpdateAsync(s => s.SetProperty(i => i.FileSize, publishedSize), ct)
                 .ConfigureAwait(false);
             if (updated > 0)
             {
                 Log.Information(
                     "Reconciled DavItem FileSize for multipart blob {BlobId} to {Size}",
-                    fileBlobId, size.Value);
+                    fileBlobId, publishedSize);
             }
         }
         catch (Exception e)

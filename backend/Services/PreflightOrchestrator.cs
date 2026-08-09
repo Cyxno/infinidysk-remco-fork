@@ -192,8 +192,9 @@ public class PreflightOrchestrator(
                 .FirstOrDefaultAsync(ct).ConfigureAwait(false);
             if (historyId is null) return;
 
+            var completedHistoryId = historyId.Value;
             var davItem = await ctx.Items.AsNoTracking()
-                .Where(x => x.HistoryItemId == historyId.Value
+                .Where(x => x.HistoryItemId == completedHistoryId
                             && x.Type == DavItem.ItemType.UsenetFile
                             && x.SubType == DavItem.ItemSubType.MultipartFile)
                 .OrderByDescending(x => x.FileSize ?? 0)
