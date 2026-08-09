@@ -335,7 +335,7 @@ public class AddFileController(
             await using var dst = System.IO.File.Create(destPath);
             await src!.CopyToAsync(dst);
         }
-        catch (Exception e)
+        catch (Exception e) when (!e.IsCancellationException())
         {
             throw new Exception($"Could not save nzb to `{backupLocation}`", e);
         }

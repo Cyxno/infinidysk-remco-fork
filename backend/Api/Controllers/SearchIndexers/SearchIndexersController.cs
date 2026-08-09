@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using NzbWebDAV.Clients.Indexers;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Extensions;
 using NzbWebDAV.Services;
 using NzbWebDAV.Utils;
 
@@ -71,7 +72,7 @@ public class SearchIndexersController(
                     ElapsedMs = sw.ElapsedMilliseconds,
                 }, Results: mapped);
             }
-            catch (Exception e)
+            catch (Exception e) when (!e.IsCancellationException(ct))
             {
                 return (Status: new SearchIndexersResponse.IndexerStatus
                 {

@@ -456,7 +456,7 @@ public class AddUrlRequest() : AddFileRequest
             filename = AddNzbExtension(filename);
             return filename;
         }
-        catch
+        catch (Exception e) when (!e.IsCancellationException())
         {
             return null;
         }
