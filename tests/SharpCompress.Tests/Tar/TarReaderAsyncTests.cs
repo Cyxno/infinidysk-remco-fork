@@ -352,7 +352,7 @@ public class TarReaderAsyncTests : ReaderTests
         var archiveFullPath = Path.Combine(TEST_ARCHIVES_PATH, "Tar.tar");
         using Stream stream = File.OpenRead(archiveFullPath);
         await using var reader = await ReaderFactory.OpenAsyncReader(new AsyncOnlyStream(stream));
-        var memoryStream = new MemoryStream();
+        using var memoryStream = new MemoryStream();
 
         Assert.True(await reader.MoveToNextEntryAsync());
         Assert.True(await reader.MoveToNextEntryAsync());
@@ -428,7 +428,7 @@ public class TarReaderAsyncTests : ReaderTests
         var archiveFullPath = Path.Combine(TEST_ARCHIVES_PATH, "TarCorrupted.tar");
         using Stream stream = File.OpenRead(archiveFullPath);
         await using var reader = await ReaderFactory.OpenAsyncReader(new AsyncOnlyStream(stream));
-        var memoryStream = new MemoryStream();
+        using var memoryStream = new MemoryStream();
 
         Assert.True(await reader.MoveToNextEntryAsync());
         Assert.True(await reader.MoveToNextEntryAsync());

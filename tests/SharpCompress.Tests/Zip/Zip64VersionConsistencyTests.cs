@@ -39,7 +39,8 @@ public class Zip64VersionConsistencyTests : WriterTests
         };
 
         var zipArchive = ZipArchive.CreateArchive();
-        zipArchive.AddEntry("empty", new MemoryStream());
+        using var entryStream = new MemoryStream();
+        zipArchive.AddEntry("empty", entryStream);
         zipArchive.SaveTo(filename, writerOptions);
 
         // Now read the raw bytes to verify version consistency
@@ -143,7 +144,8 @@ public class Zip64VersionConsistencyTests : WriterTests
         };
 
         var zipArchive = ZipArchive.CreateArchive();
-        zipArchive.AddEntry("empty", new MemoryStream());
+        using var entryStream = new MemoryStream();
+        zipArchive.AddEntry("empty", entryStream);
         zipArchive.SaveTo(filename, writerOptions);
 
         // Read the raw bytes
@@ -196,7 +198,8 @@ public class Zip64VersionConsistencyTests : WriterTests
         var zipArchive = ZipArchive.CreateArchive();
         var data = new byte[100];
         new Random(42).NextBytes(data);
-        zipArchive.AddEntry("test.bin", new MemoryStream(data));
+        using var entryStream = new MemoryStream(data);
+        zipArchive.AddEntry("test.bin", entryStream);
         zipArchive.SaveTo(filename, writerOptions);
 
         // Read the raw bytes
@@ -249,7 +252,8 @@ public class Zip64VersionConsistencyTests : WriterTests
         var zipArchive = ZipArchive.CreateArchive();
         var data = new byte[100];
         new Random(42).NextBytes(data);
-        zipArchive.AddEntry("test.bin", new MemoryStream(data));
+        using var entryStream = new MemoryStream(data);
+        zipArchive.AddEntry("test.bin", entryStream);
         zipArchive.SaveTo(filename, writerOptions);
 
         // Read the raw bytes

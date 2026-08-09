@@ -567,7 +567,7 @@ public class LzmaStreamAsyncTests : TestBase
     [Fact]
     public async ValueTask TestLzmaEncodingAccuracyAsync()
     {
-        var input = new MemoryStream(LzmaResultData);
+        using var input = new MemoryStream(LzmaResultData);
         var compressed = new MemoryStream();
         var lzmaEncodingStream = LzmaStream.Create(
             LzmaEncoderProperties.Default,
@@ -578,7 +578,7 @@ public class LzmaStreamAsyncTests : TestBase
         await lzmaEncodingStream.DisposeAsync().ConfigureAwait(false);
         compressed.Position = 0;
 
-        var output = new MemoryStream();
+        using var output = new MemoryStream();
         await DecompressLzmaStreamAsync(
                 lzmaEncodingStream.Properties,
                 compressed,

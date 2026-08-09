@@ -351,8 +351,10 @@ public class ZipArchiveTests : ArchiveTests
     public void Zip_Create_NoDups()
     {
         using var arc = ZipArchive.CreateArchive();
-        arc.AddEntry("1.txt", new MemoryStream());
-        Assert.Throws<ArchiveException>(() => arc.AddEntry("\\1.txt", new MemoryStream()));
+        using var entryStream = new MemoryStream();
+        arc.AddEntry("1.txt", entryStream);
+        using var duplicateStream = new MemoryStream();
+        Assert.Throws<ArchiveException>(() => arc.AddEntry("\\1.txt", duplicateStream));
     }
 
     [Fact]
@@ -789,8 +791,10 @@ public class ZipArchiveTests : ArchiveTests
             )
         )
         {
-            zipWriter.Write("foo.txt", new MemoryStream(Array.Empty<byte>()));
-            zipWriter.Write("foo2.txt", new MemoryStream(new byte[10]));
+            using var fooStream = new MemoryStream(Array.Empty<byte>());
+            zipWriter.Write("foo.txt", fooStream);
+            using var foo2Stream = new MemoryStream(new byte[10]);
+            zipWriter.Write("foo2.txt", foo2Stream);
         }
 
         stream = new MemoryStream(stream.ToArray());
@@ -801,7 +805,7 @@ public class ZipArchiveTests : ArchiveTests
             foreach (var entry in zipArchive.Entries)
             {
                 using var entryStream = entry.OpenEntryStream();
-                var tempStream = new MemoryStream();
+                using var tempStream = new MemoryStream();
                 const int bufSize = 0x1000;
                 var buf = new byte[bufSize];
                 var bytesRead = 0;
@@ -1020,7 +1024,7 @@ public class ZipArchiveTests : ArchiveTests
         var entries = archive.Entries.Where(x => !x.IsDirectory).ToList();
         Assert.Single(entries);
         Assert.Equal(0, entries[0].Size);
-        var outStream = new MemoryStream();
+        using var outStream = new MemoryStream();
         entries[0].WriteTo(outStream);
         Assert.Equal(0, outStream.Length);
     }

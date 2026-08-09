@@ -54,7 +54,7 @@ public class SharpCompressStreamPassthroughAsyncTest
         var ms = new MemoryStream(new byte[] { 1, 2, 3, 4, 5 });
         var stream = SharpCompressStream.CreateNonDisposing(ms);
         var buffer = new byte[5];
-        var cts = new System.Threading.CancellationTokenSource();
+        using var cts = new System.Threading.CancellationTokenSource();
         int bytesRead = await stream
             .ReadAsync(buffer, 0, buffer.Length, cts.Token)
             .ConfigureAwait(false);
@@ -67,7 +67,7 @@ public class SharpCompressStreamPassthroughAsyncTest
         var ms = new MemoryStream();
         var stream = SharpCompressStream.CreateNonDisposing(ms);
         var data = new byte[] { 1, 2, 3, 4, 5 };
-        var cts = new System.Threading.CancellationTokenSource();
+        using var cts = new System.Threading.CancellationTokenSource();
         await stream.WriteAsync(data, 0, data.Length, cts.Token).ConfigureAwait(false);
         Assert.Equal(data, ms.ToArray());
     }
@@ -78,7 +78,7 @@ public class SharpCompressStreamPassthroughAsyncTest
         var ms = new MemoryStream();
         var stream = SharpCompressStream.CreateNonDisposing(ms);
         await stream.WriteAsync(new byte[] { 1, 2, 3 }, 0, 3).ConfigureAwait(false);
-        var cts = new System.Threading.CancellationTokenSource();
+        using var cts = new System.Threading.CancellationTokenSource();
         await stream.FlushAsync(cts.Token).ConfigureAwait(false);
         Assert.Equal(3, ms.Length);
     }

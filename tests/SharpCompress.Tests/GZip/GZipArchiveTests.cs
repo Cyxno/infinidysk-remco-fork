@@ -81,31 +81,33 @@ public class GZipArchiveTests : ArchiveTests
         using var archive = GZipArchive.OpenArchive(inputStream);
         var archiveEntry = archive.Entries.First();
 
-        MemoryStream tarStream;
+        long size;
         using (var entryStream = archiveEntry.OpenEntryStream())
         {
-            tarStream = new MemoryStream();
+            using var tarStream = new MemoryStream();
             entryStream.CopyTo(tarStream);
+            size = tarStream.Length;
         }
-        var size = tarStream.Length;
+        long secondSize;
         using (var entryStream = archiveEntry.OpenEntryStream())
         {
-            tarStream = new MemoryStream();
+            using var tarStream = new MemoryStream();
             entryStream.CopyTo(tarStream);
+            secondSize = tarStream.Length;
         }
-        Assert.Equal(size, tarStream.Length);
+        Assert.Equal(size, secondSize);
         using (var entryStream = archiveEntry.OpenEntryStream())
         {
             var result = TarArchive.IsTarFile(entryStream);
             Assert.True(result);
         }
-        Assert.Equal(size, tarStream.Length);
+        Assert.Equal(size, secondSize);
         using (var entryStream = archiveEntry.OpenEntryStream())
         {
-            tarStream = new MemoryStream();
+            using var tarStream = new MemoryStream();
             entryStream.CopyTo(tarStream);
+            Assert.Equal(size, tarStream.Length);
         }
-        Assert.Equal(size, tarStream.Length);
     }
 
     [Fact]

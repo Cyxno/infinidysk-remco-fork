@@ -77,7 +77,7 @@ public class TarArchiveTests : ArchiveTests
         )
         using (Stream inputStream = new MemoryStream())
         {
-            var sw = new StreamWriter(inputStream);
+            using var sw = new StreamWriter(inputStream);
             sw.Write("dummy filecontent");
             sw.Flush();
 
@@ -143,7 +143,7 @@ public class TarArchiveTests : ArchiveTests
         )
         using (Stream inputStream = new MemoryStream())
         {
-            var sw = new StreamWriter(inputStream);
+            using var sw = new StreamWriter(inputStream);
             sw.Write("dummy filecontent");
             sw.Flush();
 

@@ -184,7 +184,8 @@ public class ZipCrcExtractionTests : ArchiveTests
             )
         )
         {
-            writer.Write(EntryName, new MemoryStream(EntryData));
+            using var entryStream = new MemoryStream(EntryData);
+            writer.Write(EntryName, entryStream);
         }
 
         var bytes = zipStream.ToArray();
