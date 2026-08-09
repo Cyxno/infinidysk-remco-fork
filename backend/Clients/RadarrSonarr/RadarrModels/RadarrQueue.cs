@@ -11,7 +11,7 @@ public class RadarrQueue : ArrQueue<RadarrQueueRecord>
             Page = Page,
             PageSize = PageSize,
             TotalRecords = TotalRecords,
-            Records = Records.Select(ArrQueueRecord (x) => x).ToList()
+            Records = Records.Select(x => (ArrQueueRecord)x).ToList()
         };
     }
 }

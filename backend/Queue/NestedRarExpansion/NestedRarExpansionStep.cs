@@ -288,12 +288,12 @@ public static class NestedRarExpansionStep
     private static int? GetPartNumberFromHeaders(List<IRarHeader> headers)
     {
         var archiveHeader = headers.OfType<IRarArchiveHeader>().FirstOrDefault();
-        if (archiveHeader?.VolumeNumber != null) return archiveHeader.VolumeNumber.Value;
+        if (archiveHeader?.VolumeNumber is { } archiveVolume) return archiveVolume;
 
         var endHeader = headers.OfType<IRarEndArchiveHeader>().FirstOrDefault();
-        if (endHeader?.VolumeNumber != null) return endHeader.VolumeNumber.Value;
+        if (endHeader?.VolumeNumber is { } endVolume) return endVolume;
 
-        if (archiveHeader?.IsFirstVolume == true) return -1;
+        if (archiveHeader is not null && archiveHeader.IsFirstVolume) return -1;
         return null;
     }
 
