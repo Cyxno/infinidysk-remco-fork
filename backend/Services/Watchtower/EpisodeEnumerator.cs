@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
+using NzbWebDAV.Extensions;
 using Serilog;
 
 namespace NzbWebDAV.Services;
@@ -83,7 +84,7 @@ public class EpisodeEnumerator
             result.Sort(static (a, b) => a.Number.CompareTo(b.Number));
             return result;
         }
-        catch (Exception e)
+        catch (Exception e) when (!e.IsCancellationException(ct))
         {
             Log.Debug(e, "EpisodeEnumerator: Kitsu episode fetch failed for {Id}", kitsuId);
             return Array.Empty<Episode>();
@@ -123,7 +124,7 @@ public class EpisodeEnumerator
             result.Sort(static (a, b) => a.Season != b.Season ? a.Season.CompareTo(b.Season) : a.Number.CompareTo(b.Number));
             return result;
         }
-        catch (Exception e)
+        catch (Exception e) when (!e.IsCancellationException(ct))
         {
             Log.Debug(e, "EpisodeEnumerator: TVmaze episode fetch failed for {Imdb}", imdb);
             return Array.Empty<Episode>();
