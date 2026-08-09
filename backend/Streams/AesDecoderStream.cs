@@ -8,7 +8,7 @@ namespace NzbWebDAV.Streams
     internal sealed class AesDecoderStream : FastReadOnlyStream
     {
         private readonly Stream _mStream;
-        private Aes _aes; // keep Aes alive for transform lifetime
+        private readonly Aes _aes; // keep Aes alive for transform lifetime
         private ICryptoTransform _mDecoder;
         private readonly byte[] _plainBuffer; // decrypted bytes cache
         private int _plainStart;

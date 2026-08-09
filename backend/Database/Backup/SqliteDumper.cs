@@ -185,10 +185,11 @@ public static class SqliteDumper
         await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
         var valueBuffer = new object[columns.Count];
+        var sb = new StringBuilder();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             reader.GetValues(valueBuffer);
-            var sb = new StringBuilder();
+            sb.Clear();
             sb.Append("INSERT INTO ").Append(quotedTable)
                 .Append(" (").Append(quotedColumns).Append(") VALUES (");
 
