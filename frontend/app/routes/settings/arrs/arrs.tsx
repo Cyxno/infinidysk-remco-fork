@@ -190,7 +190,7 @@ export function ArrsSettings({ config, setNewConfig }: ArrsSettingsProps) {
             ...arrConfig,
             QueueRules: newQueueRules
         })
-    }, [arrConfig, updateConfig])
+    }, [arrConfig, updateConfig]);
 
 
     return (

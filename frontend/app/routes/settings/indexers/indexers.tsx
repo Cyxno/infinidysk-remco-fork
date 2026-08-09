@@ -9,7 +9,6 @@ import {
     Label,
     ManagedSetting,
     Modal,
-    Select,
     SettingsCard,
     SettingsIntro,
     SettingsPage,
