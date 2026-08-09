@@ -183,7 +183,7 @@ public class MultiSegmentStreamAdaptiveWidthTests
             client, segmentCount, articleBufferSize, segmentSize);
 
         var buffer = new byte[segmentSize];
-        var actual = new MemoryStream();
+        using var actual = new MemoryStream();
 
         // Starve to force 4→2→1, then release ahead to recover toward 4.
         await foreach (var n in ConsumeWithStarvationLockstepAsync(stream, client, buffer, 40))

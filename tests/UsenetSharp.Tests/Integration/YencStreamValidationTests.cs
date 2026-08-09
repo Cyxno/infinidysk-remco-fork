@@ -27,7 +27,8 @@ public class YencStreamValidationTests
             "vAOEczfxpsXMjg0bUPUGO7Bb@KDqE994Bw3O0.BG5",
         };
 
-        var cancellationToken = new CancellationTokenSource(TimeSpan.FromSeconds(120)).Token;
+        using var timeoutSource = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+        var cancellationToken = timeoutSource.Token;
 
         // Connect both clients once
         var usenetClient = new NntpClient(new NntpConnection());
@@ -115,7 +116,8 @@ public class YencStreamValidationTests
     {
         // Arrange - Most thorough test: compare every single byte
         var segmentId = "439e9msqibLI2Ckyt7z6EMUY@iLqyzimBg7ac.t2n";
-        var cancellationToken = new CancellationTokenSource(TimeSpan.FromSeconds(60)).Token;
+        using var timeoutSource = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var cancellationToken = timeoutSource.Token;
 
         // Decode with Usenet package
         byte[] usenetPackageDecoded;

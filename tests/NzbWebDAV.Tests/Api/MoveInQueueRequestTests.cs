@@ -33,8 +33,9 @@ public class MoveInQueueRequestTests
         var third = Guid.NewGuid();
         var context = new DefaultHttpContext();
         context.Request.QueryString = new QueryString($"?value={first},{second}&value2=0");
-        context.Request.Body = new MemoryStream(
+        using var bodyStream = new MemoryStream(
             System.Text.Encoding.UTF8.GetBytes($$"""{"nzo_ids":["{{third}}"]}"""));
+        context.Request.Body = bodyStream;
         context.Request.ContentType = "application/json";
 
         var request = await MoveInQueueRequest.New(context);
