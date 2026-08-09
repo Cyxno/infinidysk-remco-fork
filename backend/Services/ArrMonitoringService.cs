@@ -75,7 +75,10 @@ public class ArrMonitoringService : BackgroundService
                 resolutions.Add((record.Title, action.Value));
             }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Monitoring pass aborted on shutdown.
+        }
         catch (Exception e) when (e is HttpRequestException { InnerException: System.Net.Sockets.SocketException })
         {
             Log.Debug(e, "Could not reach Arr instance {Host} for queue monitoring", client.Host);

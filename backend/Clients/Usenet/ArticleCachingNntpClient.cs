@@ -369,6 +369,7 @@ public class ArticleCachingNntpClient(
         }
         catch
         {
+            // Previous response failures surface on their own task; only ordering matters here.
         }
 
         return await response.ConfigureAwait(false);
@@ -405,6 +406,7 @@ public class ArticleCachingNntpClient(
         }
         catch
         {
+            // Callback exceptions must not fault transport tasks (streaming lifecycle invariant).
         }
     }
 

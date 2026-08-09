@@ -43,7 +43,10 @@ public class PreflightOrchestrator(
             {
                 prepared = await PreflightAsync(mode, candidates, session.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) { }
+            catch (OperationCanceledException)
+            {
+                // Preflight cancelled: session ended or was superseded.
+            }
             catch (Exception e)
             {
                 Log.Debug(e, "Preflight failed for {Type}/{Id}", type, id);

@@ -249,7 +249,10 @@ public class HealthCheckService : BackgroundService
             progressHook.ProgressChanged += (_, progress) =>
             {
                 try { statCts?.CancelAfter(HealthCheckProgressTimeout); }
-                catch (ObjectDisposedException) { }
+                catch (ObjectDisposedException)
+                {
+                    // statCts may already be disposed when a progress event races teardown.
+                }
                 var message = $"{davItem.Id}|{progress}";
                 debounce(() => _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, message));
             };

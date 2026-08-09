@@ -287,6 +287,7 @@ public class ListSourceEnumerator
         }
         catch
         {
+            // Malformed list payload; yield whatever refs parsed before the failure.
         }
         return refs;
     }

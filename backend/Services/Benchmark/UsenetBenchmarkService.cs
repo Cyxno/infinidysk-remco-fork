@@ -465,6 +465,7 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         }
         catch (OperationCanceledException)
         {
+            // Workers stop via cancellation during soft-stop.
         }
 
         ladder.Prune(dead.ToArray());
@@ -773,6 +774,7 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         }
         catch (OperationCanceledException)
         {
+            // Cancellation ends the delay early; callers re-check the token.
         }
     }
 

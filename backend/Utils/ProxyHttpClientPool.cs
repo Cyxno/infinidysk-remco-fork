@@ -117,12 +117,13 @@ public static class ProxyHttpClientPool
 
     private static void TrySetKeepAliveTuning(Socket socket)
     {
+        // Keep-alive tuning is best-effort; platforms missing an option simply skip it.
         try { socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 30); }
-        catch { }
+        catch { /* unsupported on this platform */ }
         try { socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 5); }
-        catch { }
+        catch { /* unsupported on this platform */ }
         try { socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 3); }
-        catch { }
+        catch { /* unsupported on this platform */ }
     }
 
     private static string? Normalize(string? raw)

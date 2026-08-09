@@ -101,6 +101,7 @@ internal sealed class BenchmarkConnectionLadder(UsenetProviderConfig.ConnectionD
         }
         catch (OperationCanceledException)
         {
+            // Cancellation ends the delay early; callers re-check the token.
         }
     }
 }

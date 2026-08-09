@@ -107,6 +107,7 @@ public class WardenSourcesImportController(WardenStore warden, WardenRemoteSourc
             }
             catch (JsonException)
             {
+                // Not a JSON bundle; fall through to line-based parsing.
             }
         }
 
