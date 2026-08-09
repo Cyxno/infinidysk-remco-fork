@@ -96,7 +96,7 @@ public class LazyRarProcessorTests
             .ProcessAsync() as LazyRarProcessor.Result;
 
         Assert.NotNull(result);
-        Assert.Equal("movie.mkv", result.PathInArchive);
+        Assert.Equal("movie.mkv", result!.PathInArchive);
         Assert.Equal(uncompressed, result.TotalFileSize);
         Assert.Single(result.PendingParts);
     }
@@ -124,7 +124,7 @@ public class LazyRarProcessorTests
             .ProcessAsync() as LazyRarProcessor.Result;
 
         Assert.NotNull(result);
-        Assert.True(result.FirstPart.SegmentIdByteRange.Contains(result.FirstPart.FilePartByteRange));
+        Assert.True(result!.FirstPart.SegmentIdByteRange.Contains(result.FirstPart.FilePartByteRange));
         Assert.Equal(result.FirstPart.FilePartByteRange.EndExclusive, result.FirstPart.SegmentIdByteRange.Count);
         Assert.True(result.FirstPart.SegmentIdByteRange.Count > underestimatedSize);
     }

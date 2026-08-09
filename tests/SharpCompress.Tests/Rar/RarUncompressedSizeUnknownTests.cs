@@ -82,7 +82,7 @@ public class RarUncompressedSizeUnknownTests
         }
 
         Assert.NotNull(first);
-        Assert.False(first.IsUncompressedSizeUnknown);
+        Assert.False(first!.IsUncompressedSizeUnknown);
         Assert.NotEqual(long.MaxValue, first.UncompressedSize);
     }
 

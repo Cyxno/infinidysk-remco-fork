@@ -51,7 +51,7 @@ public class RarHeaderFactoryDeferredSkipTests : TestBase
 
         Assert.NotNull(first);
         // The stream must still sit at the start of the packed data — no seek past it.
-        Assert.Equal(first.DataStartPosition, stream.Position);
+        Assert.Equal(first!.DataStartPosition, stream.Position);
     }
 
     [Theory]

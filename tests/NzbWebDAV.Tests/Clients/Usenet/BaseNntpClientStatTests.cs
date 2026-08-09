@@ -119,6 +119,7 @@ public class BaseNntpClientStatTests
             await foreach (var _ in client.StatsPipelinedAsync(
                                ["seg@example"], 8, CancellationToken.None))
             {
+                // Drain the pipeline; the 480 response surfaces as an exception mid-enumeration.
             }
         });
 

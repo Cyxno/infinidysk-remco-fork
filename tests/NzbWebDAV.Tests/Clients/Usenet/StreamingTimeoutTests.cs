@@ -186,6 +186,7 @@ public class StreamingTimeoutTests
             await foreach (var _ in client.DecodedBodiesPipelinedAsync(
                                ["seg"], depth: 1, CancellationToken.None))
             {
+                // Drain the pipeline; touching the retired pool throws mid-enumeration.
             }
         }
 

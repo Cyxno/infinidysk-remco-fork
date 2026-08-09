@@ -185,7 +185,7 @@ public class NntpClientCheckAllSegmentsTests
             result = item;
 
         Assert.NotNull(result);
-        Assert.False(result.Found);
+        Assert.False(result!.Found);
         Assert.Null(result.Stream);
     }
 

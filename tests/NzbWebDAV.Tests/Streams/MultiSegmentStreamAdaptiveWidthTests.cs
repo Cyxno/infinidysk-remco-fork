@@ -52,6 +52,7 @@ public class MultiSegmentStreamAdaptiveWidthTests
         await foreach (var _ in ConsumeWithStarvationLockstepAsync(
             stream, client, buffer, segmentCount, readinessSamples, widthSamples))
         {
+            // Drain to completion; readiness/width samples are collected by the consumer.
         }
 
         // Production reported starvation at every boundary: the consumer always arrived
@@ -164,6 +165,7 @@ public class MultiSegmentStreamAdaptiveWidthTests
         var buffer = new byte[segmentSize];
         while (await stream.ReadAsync(buffer) > 0)
         {
+            // Discard bytes; draining completes lease/batch accounting for the asserts.
         }
 
         Assert.True(budget.LeasedBytes <= budget.CapBytes);
