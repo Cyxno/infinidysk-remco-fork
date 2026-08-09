@@ -348,9 +348,9 @@ public sealed class SymlinkPlanner(UsenetMigrationStore store, ConfigManager con
                 }
             }
 
-            foreach (var unmatched in matches.Where(m => m.DavItemId == null))
+            foreach (var rf in matches.Where(m => m.DavItemId == null)
+                         .Select(unmatched => releaseFiles.First(f => f.Id == unmatched.ReleaseFileId)))
             {
-                var rf = releaseFiles.First(f => f.Id == unmatched.ReleaseFileId);
                 Log.Warning(
                     "Unable to match Altmount file {VirtualPath} using normalized name {NormalizedName} " +
                     "and size {FileSize}. Available leaves: {Leaves}",

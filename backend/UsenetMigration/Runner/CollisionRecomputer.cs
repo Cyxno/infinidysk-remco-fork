@@ -68,9 +68,8 @@ public sealed class CollisionRecomputer(UsenetMigrationStore store)
             foreach (var (storeRef, list) in findings)
             {
                 if (!merged.TryGetValue(storeRef, out var reasons)) continue;
-                foreach (var f in list)
-                    if (!reasons.Contains(f.Reason))
-                        reasons.Add(f.Reason);
+                foreach (var f in list.Where(f => !reasons.Contains(f.Reason)))
+                    reasons.Add(f.Reason);
             }
         }
 

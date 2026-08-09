@@ -234,8 +234,8 @@ public sealed class SearchExcludeSyncService : BackgroundService
             && root.TryGetProperty("values", out var values)
             && values.ValueKind == JsonValueKind.Array)
         {
-            foreach (var el in values.EnumerateArray())
-                if (el.ValueKind == JsonValueKind.String) items.Add(el.GetString()!);
+            foreach (var el in values.EnumerateArray().Where(el => el.ValueKind == JsonValueKind.String))
+                items.Add(el.GetString()!);
             return items;
         }
 

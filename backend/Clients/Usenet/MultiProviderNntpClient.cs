@@ -1087,10 +1087,8 @@ public class MultiProviderNntpClient(
     {
         if (priorMisses is not { Count: > 0 }) return null;
         List<(string Host, SegmentFetch.FetchStatus Reason)>? cross = null;
-        foreach (var miss in priorMisses)
+        foreach (var miss in priorMisses.Where(miss => !string.Equals(miss.Host, rescuer, StringComparison.OrdinalIgnoreCase)))
         {
-            if (string.Equals(miss.Host, rescuer, StringComparison.OrdinalIgnoreCase))
-                continue;
             (cross ??= []).Add(miss);
         }
         return cross;

@@ -67,9 +67,8 @@ public static class CollisionDetector
         var groups = candidates
             .GroupBy(c => (c.TargetCategory, c.JobName));
 
-        foreach (var group in groups)
+        foreach (var members in groups.Select(group => group.ToList()))
         {
-            var members = group.ToList();
             var redStoreRefs = new HashSet<string>(StringComparer.Ordinal);
 
             // Pass 1 (Red): a QueueFileName shared by ≥2 stores evicts silently.
@@ -98,9 +97,8 @@ public static class CollisionDetector
             // Pass 2 (Amber): multiple distinct QueueFileNames sharing one JobName.
             if (distinctQueueKeys > 1)
             {
-                foreach (var member in members)
+                foreach (var member in members.Where(member => !redStoreRefs.Contains(member.StoreRef)))
                 {
-                    if (redStoreRefs.Contains(member.StoreRef)) continue;
                     FindingsFor(member.StoreRef).Add(new CollisionFinding
                     {
                         Reason = VerdictReason.MountFolderCollision,

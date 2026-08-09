@@ -28,9 +28,8 @@ public static class IndexerResultFilter
             return items.ToList();
 
         var kept = new List<NewznabClient.NewznabItem>(items.Count);
-        foreach (var item in items)
+        foreach (var item in items.Where(item => !ShouldDrop(item, filter, now)))
         {
-            if (ShouldDrop(item, filter, now)) continue;
             kept.Add(item);
         }
 

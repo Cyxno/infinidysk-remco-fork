@@ -232,9 +232,8 @@ public class WatchtowerService(
         var srcId = source.Id.ToString();
 
         var yielded = new Dictionary<string, WtContentRef>();
-        foreach (var r in refs)
+        foreach (var r in refs.Where(r => !string.IsNullOrWhiteSpace(r.Type) && !string.IsNullOrWhiteSpace(r.ContentId)))
         {
-            if (string.IsNullOrWhiteSpace(r.Type) || string.IsNullOrWhiteSpace(r.ContentId)) continue;
             yielded[$"{r.Type}:{r.ContentId}"] = r;
         }
 
@@ -304,9 +303,9 @@ public class WatchtowerService(
         }
 
         var staleIds = new List<Guid>();
-        foreach (var c in cascaded ? await LoadClaimedAsync().ConfigureAwait(false) : claimed)
+        foreach (var c in (cascaded ? await LoadClaimedAsync().ConfigureAwait(false) : claimed)
+                     .Where(c => !yielded.ContainsKey(c.Key)))
         {
-            if (yielded.ContainsKey(c.Key)) continue;
             var prov = WtJson.ReadStrings(c.Provenance);
             prov.Remove(srcId);
             if (prov.Count == 0)
@@ -582,9 +581,8 @@ public class WatchtowerService(
             .ToListAsync(ct).ConfigureAwait(false);
 
         var seasons = new HashSet<int>();
-        foreach (var id in ids)
+        foreach (var parts in ids.Select(id => id.Split(':')))
         {
-            var parts = id.Split(':');
             if (parts.Length >= 2 && int.TryParse(parts[^1], out var s)) seasons.Add(s);
         }
         return seasons;
@@ -1001,9 +999,8 @@ public class WatchtowerService(
             .ToListAsync(ct).ConfigureAwait(false);
 
         var maxSeason = season;
-        foreach (var id in ids)
+        foreach (var parts in ids.Select(id => id.Split(':')))
         {
-            var parts = id.Split(':');
             if (parts.Length >= 2 && int.TryParse(parts[^1], out var s) && s > maxSeason) maxSeason = s;
         }
 

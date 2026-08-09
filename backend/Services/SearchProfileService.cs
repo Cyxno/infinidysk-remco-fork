@@ -857,10 +857,8 @@ public class SearchProfileService(
         void AddAll(string? raw)
         {
             if (string.IsNullOrWhiteSpace(raw)) return;
-            foreach (var part in raw.Split(','))
+            foreach (var v in raw.Split(',').Select(part => part.Trim()).Where(v => v.Length > 0))
             {
-                var v = part.Trim();
-                if (v.Length == 0) continue;
                 if (seen.Add(v)) result.Add(v);
             }
         }

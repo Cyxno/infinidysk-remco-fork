@@ -486,10 +486,11 @@ public partial class WardenStore
         {
             var providers = _configManager.GetUsenetProviderConfig().Providers;
             var set = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var p in providers)
+            foreach (var bk in providers
+                         .Select(p => WardenFingerprint.Backbone(p.Host))
+                         .Where(bk => bk != "unknown"))
             {
-                var bk = WardenFingerprint.Backbone(p.Host);
-                if (bk != "unknown") set.Add(bk);
+                set.Add(bk);
             }
             return set.Count == 0 ? new[] { "unknown" } : set.ToArray();
         }
@@ -621,9 +622,8 @@ public partial class WardenStore
                 cmd.Parameters.Add(pT);
                 cmd.Parameters.Add(pN);
                 cmd.Parameters.Add(pBk);
-                foreach (var r in model.Entries)
+                foreach (var r in model.Entries.Where(r => IsValidFp(r.Fp)))
                 {
-                    if (!IsValidFp(r.Fp)) continue;
                     pFp.Value = r.Fp;
                     pT.Value = r.DeadAt;
                     pN.Value = r.Count <= 0 ? 1 : r.Count;
@@ -645,8 +645,8 @@ public partial class WardenStore
     private static string MergeBackbones(string existingCsv, IEnumerable<string> add)
     {
         var set = new HashSet<string>(SplitBackbones(existingCsv), StringComparer.Ordinal);
-        foreach (var b in add)
-            if (!string.IsNullOrWhiteSpace(b)) set.Add(b);
+        foreach (var b in add.Where(b => !string.IsNullOrWhiteSpace(b)))
+            set.Add(b);
         return set.Count == 0 ? "unknown" : string.Join(",", set);
     }
 
@@ -666,10 +666,10 @@ public partial class WardenStore
     private static bool BackboneInScope(string entryCsv, HashSet<string> mine)
     {
         var known = false;
-        foreach (var b in SplitBackbones(entryCsv))
+        foreach (var rb in SplitBackbones(entryCsv)
+                     .Select(b => WardenFingerprint.RootDomain(b))
+                     .Where(rb => rb != "unknown"))
         {
-            var rb = WardenFingerprint.RootDomain(b);
-            if (rb == "unknown") continue;
             known = true;
             if (mine.Contains(rb)) return true;
         }

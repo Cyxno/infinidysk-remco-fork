@@ -132,9 +132,8 @@ public static class VerdictReason
     public static Verdict VerdictFor(IEnumerable<string> reasons)
     {
         var worst = Verdict.Green;
-        foreach (var r in reasons)
+        foreach (var s in reasons.Select(SeverityOf))
         {
-            var s = SeverityOf(r);
             if (s > worst) worst = s;
         }
 

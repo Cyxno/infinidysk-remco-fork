@@ -877,9 +877,8 @@ public class GetOverviewStatsController(
 
     private void ApplyLiveSpeedFallback(IEnumerable<GetOverviewStatsResponse.ProviderRow> providers)
     {
-        foreach (var provider in providers)
+        foreach (var provider in providers.Where(provider => provider.SpeedMbPerSec is null))
         {
-            if (provider.SpeedMbPerSec is not null) continue;
             var bytesPerMs = providerBytesTracker.GetRecentBytesPerMs(provider.Provider, LiveSpeedMaxAge);
             if (bytesPerMs > 0)
                 provider.SpeedMbPerSec = bytesPerMs * 1000 / 1_000_000;

@@ -116,10 +116,10 @@ public static class SubtitlePreference
         var result = new HashSet<string>(StringComparer.Ordinal);
         if (string.IsNullOrWhiteSpace(value)) return result;
 
-        foreach (var raw in value.Split(Separators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var token in value.Split(Separators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                     .Select(Fold)
+                     .Where(token => token.Length > 0))
         {
-            var token = Fold(raw);
-            if (token.Length == 0) continue;
             result.Add(LanguageAliases.TryGetValue(token, out var canonical) ? canonical : token);
         }
         return result;
@@ -153,10 +153,10 @@ public static class SubtitlePreference
     {
         var decomposed = s.ToLowerInvariant().Normalize(NormalizationForm.FormD);
         var sb = new StringBuilder(decomposed.Length);
-        foreach (var c in decomposed)
+        foreach (var c in decomposed.Where(c =>
+                     CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark && char.IsLetterOrDigit(c)))
         {
-            if (CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.NonSpacingMark) continue;
-            if (char.IsLetterOrDigit(c)) sb.Append(c);
+            sb.Append(c);
         }
         return sb.ToString();
     }

@@ -1200,9 +1200,8 @@ public class HealthCheckService : BackgroundService
     {
         lock (_missingSegmentIds)
         {
-            foreach (var segmentId in segmentIds)
-                if (_missingSegmentIds.Contains(segmentId))
-                    throw new UsenetArticleNotFoundException(segmentId);
+            foreach (var segmentId in segmentIds.Where(segmentId => _missingSegmentIds.Contains(segmentId)))
+                throw new UsenetArticleNotFoundException(segmentId);
         }
     }
 }

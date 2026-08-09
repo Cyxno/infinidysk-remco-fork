@@ -208,9 +208,8 @@ public class WebsocketManager
 
             if (root.TryGetProperty("sub", out var subArray) && subArray.ValueKind == JsonValueKind.Array)
             {
-                foreach (var element in subArray.EnumerateArray())
+                foreach (var name in subArray.EnumerateArray().Select(element => element.GetString()))
                 {
-                    var name = element.GetString();
                     if (name is not null && WebsocketTopic.TryGetByName(name, out var topic) && topic is not null
                         && session.AddSubscription(topic))
                     {
@@ -222,9 +221,8 @@ public class WebsocketManager
 
             if (root.TryGetProperty("unsub", out var unsubArray) && unsubArray.ValueKind == JsonValueKind.Array)
             {
-                foreach (var element in unsubArray.EnumerateArray())
+                foreach (var name in unsubArray.EnumerateArray().Select(element => element.GetString()))
                 {
-                    var name = element.GetString();
                     if (name is not null && WebsocketTopic.TryGetByName(name, out var topic) && topic is not null
                         && session.RemoveSubscription(topic))
                     {

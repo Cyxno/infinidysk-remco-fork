@@ -108,10 +108,9 @@ public sealed class TrustedHostsMatcher
         if (_addresses.Contains(address))
             return true;
 
-        foreach (var network in _networks)
+        foreach (var network in _networks.Where(network => network.Contains(address)))
         {
-            if (network.Contains(address))
-                return true;
+            return true;
         }
 
         return false;

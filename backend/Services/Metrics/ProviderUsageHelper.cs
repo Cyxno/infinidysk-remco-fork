@@ -153,9 +153,8 @@ public static class ProviderUsageHelper
         try
         {
             await using var db = dbFactory();
-            foreach (var provider in config.Providers)
+            foreach (var provider in config.Providers.Where(provider => provider.ProviderId != Guid.Empty))
             {
-                if (provider.ProviderId == Guid.Empty) continue;
                 var key = UsenetProviderIdentity.MetricsKey(provider);
                 var bytes = await db.ProviderHourly
                     .Where(x => x.Provider == key && x.Hour >= provider.BytesUsedResetAt)

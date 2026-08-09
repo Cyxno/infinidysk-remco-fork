@@ -266,8 +266,8 @@ public class ProviderCircuitBreaker
             Interlocked.Increment(ref _failureCount);
 
             var failures = 0;
-            foreach (var entry in _window)
-                if (entry.Failed) failures++;
+            foreach (var entry in _window.Where(entry => entry.Failed))
+                failures++;
 
             if (failures >= MinFailuresToTrip
                 && failures / (double)_window.Count >= TripFailureRate)

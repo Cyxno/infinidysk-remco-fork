@@ -87,10 +87,9 @@ public class DatabaseStoreCollection(
         // include any missing category folders
         if (isContentFolder)
         {
-            foreach (var category in configManager.GetApiCategories())
+            foreach (var category in configManager.GetApiCategories().Where(category => !childNames!.Contains(category)))
             {
-                if (!childNames!.Contains(category))
-                    yield return new BaseStoreEmptyCollection(category);
+                yield return new BaseStoreEmptyCollection(category);
             }
         }
     }
