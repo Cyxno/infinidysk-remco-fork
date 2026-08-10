@@ -167,7 +167,7 @@ const defaultConfig = {
     "warden.backbone-scope": "true",
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export async function loader() {
     const configItems = await backendClient.getConfig(Object.keys(defaultConfig));
 
     const config: Record<string, string> = { ...defaultConfig };
@@ -200,7 +200,7 @@ export default function Settings(props: Route.ComponentProps) {
             <ServiceProviderNotice
                 open
                 serviceProvider={serviceProvider}
-                onClose={() => navigate("/overview", { replace: true })}
+                onClose={() => { void navigate("/overview", { replace: true }); }}
             />
         );
     }
@@ -436,7 +436,7 @@ function Body(props: BodyProps) {
                     className="min-w-28"
                     variant={saveButtonVariant}
                     disabled={isSaveButtonDisabled}
-                    onClick={onSave}>
+                    onClick={() => void onSave()}>
                     <Icon name={isSaving ? "progress_activity" : saveButtonLabel === "Saved" ? "check" : "save"} className={`!text-[18px] ${isSaving ? "animate-spin" : ""}`} />
                     {saveButtonLabel}
                 </Button>
