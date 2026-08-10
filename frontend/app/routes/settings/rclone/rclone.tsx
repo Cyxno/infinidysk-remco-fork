@@ -6,6 +6,16 @@ import { Icon } from "~/components/ui/icon";
 import { type Dispatch, type SetStateAction, useState, useCallback, useEffect } from "react";
 import { withUrlBase } from "~/utils/url-base";
 
+function formatTimeAgo(isoDate: string): string {
+    const seconds = Math.floor((Date.now() - new Date(isoDate).getTime()) / 1000);
+    if (seconds < 60) return "just now";
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
+}
+
 type RcloneSettingsProps = {
     config: Record<string, string>
     setNewConfig: Dispatch<SetStateAction<Record<string, string>>>
@@ -14,10 +24,14 @@ type RcloneSettingsProps = {
 export function RcloneSettings({ config, setNewConfig }: RcloneSettingsProps) {
     const [connectionState, setConnectionState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
     const [testError, setTestError] = useState<string | null>(null);
+    const [invalidationError, setInvalidationError] = useState<string | null>(null);
+    const [invalidationErrorAt, setInvalidationErrorAt] = useState<string | null>(null);
 
     useEffect(() => {
         setConnectionState('idle');
         setTestError(null);
+        setInvalidationError(null);
+        setInvalidationErrorAt(null);
     }, [config["rclone.host"], config["rclone.user"], config["rclone.pass"]]);
 
     const testConnection = useCallback(async () => {
@@ -28,6 +42,8 @@ export function RcloneSettings({ config, setNewConfig }: RcloneSettingsProps) {
 
         setConnectionState('testing');
         setTestError(null);
+        setInvalidationError(null);
+        setInvalidationErrorAt(null);
 
         try {
             const formData = new FormData();
@@ -45,6 +61,8 @@ export function RcloneSettings({ config, setNewConfig }: RcloneSettingsProps) {
             if (result.status && result.connected) {
                 setConnectionState('success');
                 setTestError(null);
+                setInvalidationError(result.lastInvalidationError ?? null);
+                setInvalidationErrorAt(result.lastInvalidationErrorAt ?? null);
             } else {
                 setConnectionState('error');
                 setTestError(result.error || "Connection test failed");
@@ -130,6 +148,12 @@ export function RcloneSettings({ config, setNewConfig }: RcloneSettingsProps) {
                 {connectionState === 'success' && (
                     <Alert variant="success" className="text-xs py-2">
                         Connection test successful
+                    </Alert>
+                )}
+                {connectionState === 'success' && invalidationError && (
+                    <Alert variant="warning" className="text-xs py-2">
+                        VFS cache invalidation failed{invalidationErrorAt ? ` ${formatTimeAgo(invalidationErrorAt)}` : ''}: {invalidationError}. Mounted clients may show stale
+                        entries until rclone&apos;s dir-cache expires.
                     </Alert>
                 )}
                 <p className="text-[11px] leading-relaxed text-base-content/45" id="rclone-host-help">
