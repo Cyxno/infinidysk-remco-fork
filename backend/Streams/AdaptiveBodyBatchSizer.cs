@@ -6,17 +6,22 @@ namespace NzbWebDAV.Streams;
 /// Adapts BODY pipeline batch width from consumer readiness at segment boundaries.
 /// Narrows 4→2→1 when prefetch starves; recovers gradually after sustained readiness.
 /// </summary>
-internal sealed class AdaptiveBodyBatchSizer(int maximumBatchSize)
+internal sealed class AdaptiveBodyBatchSizer(int maximumBatchSize, TimeProvider? timeProvider = null)
 {
     private const int ObservationWindow = 8;
     private const int StarvedBoundariesToNarrow = 2;
     private const int ReadyBoundariesToRecover = 16;
 
+    internal const int RewidenHoldMilliseconds = 250;
+    private static readonly TimeSpan RewidenHold = TimeSpan.FromMilliseconds(RewidenHoldMilliseconds);
+
     private readonly int _maximum = Math.Max(1, maximumBatchSize);
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private int _current = Math.Max(1, maximumBatchSize);
     private byte _starvationWindow;
     private int _observations;
     private int _ready;
+    private DateTimeOffset _lastTransition;
 
     public int Current => Volatile.Read(ref _current);
 
@@ -32,6 +37,7 @@ internal sealed class AdaptiveBodyBatchSizer(int maximumBatchSize)
             _ready = 0;
 
         int? next = null;
+        var isWiden = false;
         if (_observations == ObservationWindow
             && BitOperations.PopCount(_starvationWindow) >= StarvedBoundariesToNarrow)
         {
@@ -40,9 +46,18 @@ internal sealed class AdaptiveBodyBatchSizer(int maximumBatchSize)
         else if (_ready >= ReadyBoundariesToRecover)
         {
             next = Math.Min(_maximum, current * 2);
+            isWiden = true;
         }
 
         if (next is null) return null;
+
+        var now = _timeProvider.GetUtcNow();
+        if (isWiden && (now - _lastTransition) < RewidenHold)
+        {
+            return null;
+        }
+
+        _lastTransition = now;
         _starvationWindow = 0;
         _observations = 0;
         _ready = 0;
