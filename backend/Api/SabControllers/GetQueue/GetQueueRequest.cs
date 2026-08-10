@@ -23,14 +23,14 @@ public class GetQueueRequest
         {
             var isValidStartParam = int.TryParse(startParam, out int start);
             if (!isValidStartParam) throw new BadHttpRequestException("Invalid start parameter");
-            Start = start;
+            Start = Math.Max(0, start);
         }
 
         if (limitParam is not null)
         {
             var isValidLimit = int.TryParse(limitParam, out int limit);
             if (!isValidLimit) throw new BadHttpRequestException("Invalid limit parameter");
-            Limit = limit;
+            Limit = limit > 0 ? limit : int.MaxValue;
         }
     }
 }

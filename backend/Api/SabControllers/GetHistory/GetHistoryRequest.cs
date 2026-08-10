@@ -26,7 +26,7 @@ public class GetHistoryRequest
         {
             var isValidStartParam = int.TryParse(startParam, out int start);
             if (!isValidStartParam) throw new BadHttpRequestException("Invalid start parameter");
-            Start = start;
+            Start = Math.Max(0, start);
         }
 
         // The official Sabnzbd api uses the `limit` param to specify the number of history items
@@ -42,7 +42,7 @@ public class GetHistoryRequest
         {
             var isValidLimit = int.TryParse(limitParam, out var limit);
             if (!isValidLimit) throw new BadHttpRequestException("Invalid limit parameter");
-            Limit = limit;
+            Limit = limit > 0 ? limit : int.MaxValue;
         }
 
         // Even though we may want to ignore the `limit` param from the Arrs, NzbDAV frontend
@@ -53,12 +53,11 @@ public class GetHistoryRequest
         {
             var isValidPageSize = int.TryParse(pageSizeParam, out var pageSize);
             if (!isValidPageSize) throw new BadHttpRequestException("Invalid pageSize parameter");
-            Limit = pageSize;
+            Limit = pageSize > 0 ? pageSize : int.MaxValue;
         }
 
         // Server-side ceiling: keep ignore-limit semantics for Arrs but never materialize
-        // an unbounded history response (default Limit is int.MaxValue). Clamp instead of
-        // Min because a negative Take() becomes a negative SQLite LIMIT, which is unbounded.
+        // an unbounded history response (default Limit is int.MaxValue when omitted or ≤ 0).
         Limit = Math.Clamp(Limit, 0, configManager.GetHistoryMaxPageSize());
 
         if (nzoIdsParam is not null)
