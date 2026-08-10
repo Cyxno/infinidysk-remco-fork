@@ -253,6 +253,7 @@ public class GetOverviewStatsController(
         List<GetOverviewStatsResponse.ThroughputPoint> throughput;
         List<GetOverviewStatsResponse.ProviderRow> providers;
         long totalArticles, totalMisses, totalErrors, totalBytesFetched;
+        List<ProviderLifetimeTotal> lifetimeTotals = [];
 
         if (useRollups)
         {
@@ -264,13 +265,24 @@ public class GetOverviewStatsController(
                 .Where(f => f.Hour >= windowStart)
                 .Select(f => new { f.FromProvider, f.Reason, f.Count })
                 .ToListAsync();
+            Task<List<ProviderLifetimeTotal>>? lifetimeTotalsTask = window == GetOverviewStatsRequest.OverviewWindow.AllTime
+                ? metricsA.ProviderLifetimeTotals.ToListAsync()
+                : null;
 
-            await Task.WhenAll(sessionsTask, heatmapTask, previousSavesTask, liveCountsTask, hoursTask, failoverEdgesTask)
-                .ConfigureAwait(false);
+            var rollupTasks = new List<Task>
+            {
+                sessionsTask, heatmapTask, previousSavesTask, liveCountsTask, hoursTask, failoverEdgesTask,
+            };
+            if (lifetimeTotalsTask is not null)
+                rollupTasks.Add(lifetimeTotalsTask);
+            await Task.WhenAll(rollupTasks).ConfigureAwait(false);
 
             var hours = await hoursTask.ConfigureAwait(false);
             var sessions = await sessionsTask.ConfigureAwait(false);
             var failoverEdges = await failoverEdgesTask.ConfigureAwait(false);
+            lifetimeTotals = lifetimeTotalsTask is not null
+                ? await lifetimeTotalsTask.ConfigureAwait(false)
+                : [];
 
             throughput = BuildThroughputFromHourly(
                 hours.Select(h => (h.Hour, h.Articles, h.Misses, h.Errors, h.BytesFetched)),
@@ -281,11 +293,19 @@ public class GetOverviewStatsController(
                 windowStart,
                 bucketSize,
                 nowMs,
-                labelsByMetricsKey);
+                labelsByMetricsKey,
+                window == GetOverviewStatsRequest.OverviewWindow.AllTime ? lifetimeTotals : null);
             totalArticles = hours.Sum(h => h.Articles);
             totalMisses = hours.Sum(h => h.Misses);
             totalErrors = hours.Sum(h => h.Errors);
             totalBytesFetched = hours.Sum(h => h.BytesFetched);
+            if (window == GetOverviewStatsRequest.OverviewWindow.AllTime)
+            {
+                totalArticles += lifetimeTotals.Sum(x => x.Articles);
+                totalMisses += lifetimeTotals.Sum(x => x.Misses);
+                totalErrors += lifetimeTotals.Sum(x => x.Errors);
+                totalBytesFetched += lifetimeTotals.Sum(x => x.BytesFetched);
+            }
             rescues = hours.Where(h => h.FailoverSaves > 0)
                 .Select(h => (h.Hour, h.Provider, h.FailoverSaves))
                 .ToList();
@@ -358,7 +378,11 @@ public class GetOverviewStatsController(
             readsSaved,
             previousSaves,
             ResolveFailoverBucket(window),
-            labelsByMetricsKey);
+            labelsByMetricsKey,
+            window == GetOverviewStatsRequest.OverviewWindow.AllTime
+                ? lifetimeTotals.Where(x => x.FailoverSaves > 0)
+                    .Select(x => (x.Provider, x.FailoverSaves))
+                : null);
 
         var tiles = BuildLiveTiles(liveCounts?.Articles ?? 0, liveCounts?.Errors ?? 0);
         var sessionsBlock = BuildSessionsBlock(sessionsRows.Select(s => (s.DurationMs, s.BytesServed)));
@@ -582,7 +606,8 @@ public class GetOverviewStatsController(
         long readsSaved,
         long? previousSaves,
         long chartBucketSize,
-        IReadOnlyDictionary<string, string?> labelsByMetricsKey)
+        IReadOnlyDictionary<string, string?> labelsByMetricsKey,
+        IEnumerable<(string Provider, long Saves)>? lifetimeFailoverSaves = null)
     {
         var totalsByProvider = new Dictionary<string, long>();
         var byBucket = new SortedDictionary<long, Dictionary<string, long>>();
@@ -597,6 +622,15 @@ public class GetOverviewStatsController(
                 byBucket[bucket] = perProvider = new Dictionary<string, long>();
             perProvider.TryGetValue(provider, out var c);
             perProvider[provider] = c + saves;
+        }
+
+        if (lifetimeFailoverSaves is not null)
+        {
+            foreach (var (provider, saves) in lifetimeFailoverSaves)
+            {
+                totalsByProvider.TryGetValue(provider, out var t);
+                totalsByProvider[provider] = t + saves;
+            }
         }
 
         // Chart/list series only include currently configured providers; aggregate
@@ -840,7 +874,8 @@ public class GetOverviewStatsController(
         long windowStart,
         long bucketSize,
         long nowMs,
-        IReadOnlyDictionary<string, string?> labelsByMetricsKey)
+        IReadOnlyDictionary<string, string?> labelsByMetricsKey,
+        IEnumerable<ProviderLifetimeTotal>? foldedLifetimeTotals = null)
     {
         var totalSpan = nowMs - windowStart;
         var sparkSize = OneDay;
@@ -869,6 +904,23 @@ public class GetOverviewStatsController(
                 acc.DurationSpark[idx] += h.SumDurationMs;
             }
             byProvider[host] = acc;
+        }
+
+        if (foldedLifetimeTotals is not null)
+        {
+            foreach (var lifetime in foldedLifetimeTotals
+                         .Where(lt => IsConfiguredMetricsKey(lt.Provider, labelsByMetricsKey)))
+            {
+                if (!byProvider.TryGetValue(lifetime.Provider, out var acc))
+                    acc = new ProviderAccumulator(sparkBuckets);
+                acc.Articles += lifetime.Articles;
+                acc.Misses += lifetime.Misses;
+                acc.Errors += lifetime.Errors;
+                acc.Retries += lifetime.Retries;
+                acc.SumDurationMs += lifetime.SumDurationMs;
+                acc.Bytes += lifetime.BytesFetched;
+                byProvider[lifetime.Provider] = acc;
+            }
         }
 
         return byProvider
@@ -1117,7 +1169,7 @@ public class GetOverviewStatsController(
             .ToList();
     }
 
-    private static async Task<GetOverviewStatsResponse.LifetimeBlock> BuildLifetimeAsync(MetricsDbContext metrics)
+    internal static async Task<GetOverviewStatsResponse.LifetimeBlock> BuildLifetimeAsync(MetricsDbContext metrics)
     {
         var bytesFetched = await metrics.ProviderHourly
             .SumAsync(x => (long?)x.BytesFetched).ConfigureAwait(false) ?? 0L;
@@ -1127,6 +1179,27 @@ public class GetOverviewStatsController(
             .OrderBy(x => x.Hour)
             .Select(x => (long?)x.Hour)
             .FirstOrDefaultAsync().ConfigureAwait(false);
+
+        var folded = await metrics.ProviderLifetimeTotals
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                BytesFetched = g.Sum(x => x.BytesFetched),
+                Articles = g.Sum(x => x.Articles),
+                FirstHour = g.Min(x => x.FirstHour),
+            })
+            .FirstOrDefaultAsync().ConfigureAwait(false);
+        if (folded is not null)
+        {
+            bytesFetched += folded.BytesFetched;
+            articles += folded.Articles;
+            if (folded.FirstHour is not null)
+            {
+                firstHour = firstHour is null
+                    ? folded.FirstHour
+                    : Math.Min(firstHour.Value, folded.FirstHour.Value);
+            }
+        }
 
         var sessionCount = await metrics.ReadSessions.CountAsync().ConfigureAwait(false);
         var bytesRead = await metrics.ReadSessions
@@ -1145,6 +1218,10 @@ public class GetOverviewStatsController(
         };
     }
 
+    /// <summary>
+    /// Best-day/hour records are derived from retained <see cref="ProviderHourly"/> rows only;
+    /// pruned hourly buckets are not folded and cannot be reconstructed.
+    /// </summary>
     private static async Task<GetOverviewStatsResponse.RecordsBlock> BuildRecordsAsync(MetricsDbContext metrics)
     {
         var dayRow = await metrics.ProviderHourly
