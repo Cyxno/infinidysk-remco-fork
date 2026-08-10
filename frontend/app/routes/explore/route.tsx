@@ -12,7 +12,9 @@ import { getDownloadKey } from "~/auth/downloads.server";
 import { Loading } from "../_index/components/loading/loading";
 import { formatFileSize } from "~/utils/file-size";
 import { parseExploreWebdavPath } from "~/utils/path";
+import { fileKindRank, getExtension, getIcon, isPlayableMedia } from "./file-kind/file-kind";
 import { ItemMenu } from "./item-menu/item-menu";
+import { MediaPreview } from "./media-preview/media-preview";
 import { ConfirmModal } from "~/components/confirm-modal/confirm-modal";
 import { classNames } from "~/utils/styling";
 import { Icon, Checkbox, Button } from "~/components/ui";
@@ -59,7 +61,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
                 if (x.isDirectory) return x;
                 return {
                     ...x,
-                    mimeType: getMimeType(x.name),
+                    mimeType: getMimeType(x.name) || "",
                     downloadKey: getDownloadKey(getRelativePath(path, x.name))
                 };
             })
@@ -101,12 +103,15 @@ function Body(props: ExplorePageData) {
     const [deletePreview, setDeletePreview] = useState<DeletePreviewAggregate | null>(null);
     const [deleteError, setDeleteError] = useState<string | null>(null);
     const [isDeleting, setIsDeleting] = useState(false);
+    const [preview, setPreview] = useState<{ file: ExploreFile, url: string } | null>(null);
     const lastClickedRef = useRef<string | null>(null);
 
-    // Reset selection and query when navigating between folders.
+    // Reset selection and query when navigating between folders; closing the
+    // preview here also releases its stream instead of leaving it orphaned.
     useEffect(() => {
         setSelected(new Set());
         setQuery("");
+        setPreview(null);
         lastClickedRef.current = null;
     }, [location.pathname]);
 
@@ -167,6 +172,14 @@ function Body(props: ExplorePageData) {
         const extensionQueryParam = extension ? `&extension=${extension}` : '';
         return `/view/${relativePath}?downloadKey=${file.downloadKey}${extensionQueryParam}`;
     }, [location.pathname]);
+
+    // Playable media opens in the in-app preview; everything else keeps the
+    // direct-link behavior. Returns true when the preview took over.
+    const openPreview = useCallback((file: ExploreFile) => {
+        if (!isPlayableMedia(file)) return false;
+        setPreview({ file, url: getFilePath(file) });
+        return true;
+    }, [getFilePath]);
 
     const requestDelete = useCallback((names: string[]) => {
         if (names.length === 0) return;
@@ -421,8 +434,14 @@ function Body(props: ExplorePageData) {
                                 <a
                                     href={getFilePath(x as ExploreFile)}
                                     className={getItemContentClassName(canDelete, true)}
+                                    onClick={e => {
+                                        // Only intercept plain left-clicks — keep
+                                        // Cmd/Ctrl/middle-click opening the raw link.
+                                        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                                        if (openPreview(x as ExploreFile)) e.preventDefault();
+                                    }}
                                 >
-                                    <Icon name={getIcon(x as ExploreFile)} className="text-base-content/50 shrink-0 !text-[34px]" />
+                                    <Icon name={getIcon(x)} className="text-base-content/50 shrink-0 !text-[34px]" />
                                     <div className="flex flex-col gap-1 leading-snug text-base-content">
                                         <div className="break-all font-medium">{x.name}</div>
                                         <div className="text-xs text-base-content/50">{formatFileSize(x.size)}</div>
@@ -433,6 +452,9 @@ function Body(props: ExplorePageData) {
                                     openClassName={ITEM_MENU_OPEN_CLASS}
                                     exploreFile={x as ExploreFile}
                                     previewPath={getFilePath(x as ExploreFile)}
+                                    {...(isPlayableMedia(x)
+                                        ? { onPreview: () => { openPreview(x as ExploreFile); } }
+                                        : {})}
                                     {...(canDelete ? { onRemove: () => requestDelete([x.name]) } : {})} />
                             </div>
                         );
@@ -441,6 +463,16 @@ function Body(props: ExplorePageData) {
             }
             </>}
             {showSkeleton && <Loading className="w-[calc(100%-75px)] min-h-0 flex-1 grow" />}
+            {preview && (
+                <MediaPreview
+                    fileName={preview.file.name}
+                    filePath={getRelativePath(getWebdavPathDecoded(location.pathname), preview.file.name)}
+                    mimeType={preview.file.mimeType}
+                    sizeBytes={preview.file.size ?? null}
+                    previewUrl={preview.url}
+                    onClose={() => setPreview(null)}
+                />
+            )}
             <ConfirmModal
                 show={pendingDelete !== null}
                 title={pendingDelete && pendingDelete.length > 1 ? "Delete items" : "Delete item"}
@@ -677,31 +709,8 @@ function compareItems(a: DirectoryItem, b: DirectoryItem, key: SortKey, dir: Sor
     return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
 }
 
-function fileKindRank(item: DirectoryItem): number {
-    const ext = getExtension(item.name)?.toLowerCase() ?? "";
-    const mime = (item as ExploreFile).mimeType ?? "";
-    if (mime.startsWith("video") || ext === ".mkv" || mime === "application/mp4") return 0;
-    if (mime.startsWith("image")) return 1;
-    if (mime.startsWith("audio")) return 2;
-    return 3;
-}
-
 function formatCount(n: number, label: string) {
     return `${n} ${label}${n === 1 ? "" : "s"}`;
-}
-
-function getExtension(filename: string): string | undefined {
-    const lastDotIndex = filename.lastIndexOf('.');
-    if (lastDotIndex === -1 || lastDotIndex === 0) return undefined;
-    return filename.slice(lastDotIndex);
-}
-
-function getIcon(file: ExploreFile) {
-    if (file.name.toLowerCase().endsWith(".mkv")) return "movie";
-    if (file.mimeType === "application/mp4") return "movie";
-    if (file.mimeType && file.mimeType.startsWith("video")) return "movie";
-    if (file.mimeType && file.mimeType.startsWith("image")) return "image";
-    return "draft";
 }
 
 function getWebdavPath(pathname: string): string {
