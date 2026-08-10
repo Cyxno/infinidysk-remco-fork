@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using System.Text;
 using Microsoft.AspNetCore.Http;
 using NWebDav.Server.Helpers;
 using NzbWebDAV.Config;
@@ -436,6 +437,7 @@ public class ExceptionMiddleware(RequestDelegate next, ConfigManager configManag
         string key,
         Action<int> logAction)
     {
+        key = key.Normalize(NormalizationForm.FormC);
         var now = DateTime.UtcNow;
         var suppressed = 0;
         var shouldLog = false;
@@ -563,7 +565,7 @@ public class ExceptionMiddleware(RequestDelegate next, ConfigManager configManag
     {
         return context.Items["DavItem"] is DavItem davItem
             ? davItem.Path
-            : context.Request.Path;
+            : context.Request.Path.Value ?? context.Request.Path.ToUriComponent();
     }
 
     private static bool IsDavItemRequest(HttpContext context)
