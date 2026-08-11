@@ -227,6 +227,11 @@ public class HealthCheckService : BackgroundService
         {
             if (isUrgentRepair)
             {
+                // Validate the local payload before Repair: missing metadata is
+                // local data loss, not a bad release, and must not reach the
+                // Arr remove-and-blocklist path. Routine checks get the same
+                // guarantee from GetAllSegments below.
+                await EnsurePayloadExistsAsync(davItem, dbClient, ct).ConfigureAwait(false);
                 Log.Information("Performing urgent dynamic repair for {FilePath}", davItem.Path);
                 await HandleUrgentRepair(davItem, dbClient, ct).ConfigureAwait(false);
                 return;
@@ -303,6 +308,29 @@ public class HealthCheckService : BackgroundService
                 HealthCheckResult.RepairAction.ActionNeeded,
                 $"Health check deferred: no STAT progress for {HealthCheckProgressTimeout.TotalMinutes:0} minutes.",
                 ct).ConfigureAwait(false);
+        }
+        catch (MissingFilePayloadException e)
+        {
+            // Local payload metadata is gone (commonly a database-only restore).
+            // This says nothing about the release's health, so surface it for
+            // operator action instead of deleting or blocklisting through Arr.
+            CompleteHealthProgress(davItem.Id);
+            var utcNow = DateTimeOffset.UtcNow;
+            davItem.LastHealthCheck = utcNow;
+            davItem.NextHealthCheck = utcNow + TimeSpan.FromDays(1);
+            Log.Warning(
+                "Health check cannot run for {Path}: {Reason}",
+                davItem.Path, e.Message);
+            Log.Debug(e, "Missing streaming payload stack for {Path}", davItem.Path);
+            await RecordHealthResult(
+                dbClient, davItem,
+                HealthCheckResult.HealthResult.Unhealthy,
+                HealthCheckResult.RepairAction.ActionNeeded,
+                string.Join(" ", [
+                    "The file's streaming data is missing from the server",
+                    "(often a database restore without the blobs/ folder).",
+                    "Remove and re-download the release, or restore from a backup that includes blobs."
+                ]), ct).ConfigureAwait(false);
         }
         catch (UsenetArticleNotFoundException e)
         {
@@ -553,24 +581,45 @@ public class HealthCheckService : BackgroundService
         davItem.ReleaseDate = articleHeaders.Date;
     }
 
+    private static async Task EnsurePayloadExistsAsync(
+        DavItem davItem,
+        DavDatabaseClient dbClient,
+        CancellationToken ct)
+    {
+        var exists = davItem.SubType switch
+        {
+            DavItem.ItemSubType.NzbFile =>
+                await dbClient.GetDavNzbFileAsync(davItem, ct).ConfigureAwait(false) is not null,
+            DavItem.ItemSubType.RarFile =>
+                await dbClient.GetDavRarFileAsync(davItem, ct).ConfigureAwait(false) is not null,
+            DavItem.ItemSubType.MultipartFile =>
+                await dbClient.GetDavMultipartFileAsync(davItem, ct).ConfigureAwait(false) is not null,
+            _ => true,
+        };
+        if (!exists) throw new MissingFilePayloadException(davItem, davItem.SubType);
+    }
+
     private async Task<List<string>> GetAllSegments(DavItem davItem, DavDatabaseClient dbClient, CancellationToken ct)
     {
         if (davItem.SubType == DavItem.ItemSubType.NzbFile)
         {
             var nzbFile = await dbClient.GetDavNzbFileAsync(davItem, ct).ConfigureAwait(false);
-            return nzbFile?.SegmentIds?.ToList() ?? [];
+            return nzbFile?.SegmentIds?.ToList()
+                ?? throw new MissingFilePayloadException(davItem, DavItem.ItemSubType.NzbFile);
         }
 
         if (davItem.SubType == DavItem.ItemSubType.RarFile)
         {
             var rarFile = await dbClient.GetDavRarFileAsync(davItem, ct).ConfigureAwait(false);
-            return rarFile?.RarParts?.SelectMany(x => x.SegmentIds)?.ToList() ?? [];
+            return rarFile?.RarParts?.SelectMany(x => x.SegmentIds)?.ToList()
+                ?? throw new MissingFilePayloadException(davItem, DavItem.ItemSubType.RarFile);
         }
 
         if (davItem.SubType == DavItem.ItemSubType.MultipartFile)
         {
             var multipartFile = await dbClient.GetDavMultipartFileAsync(davItem, ct).ConfigureAwait(false);
-            return multipartFile?.Metadata?.FileParts?.SelectMany(x => x.SegmentIds)?.ToList() ?? [];
+            return multipartFile?.Metadata?.FileParts?.SelectMany(x => x.SegmentIds)?.ToList()
+                ?? throw new MissingFilePayloadException(davItem, DavItem.ItemSubType.MultipartFile);
         }
 
         return [];
