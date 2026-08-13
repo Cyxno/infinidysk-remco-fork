@@ -14,6 +14,9 @@ using NzbWebDAV.Services.Metrics;
 using NzbWebDAV.Services.StreamTrace;
 using NzbWebDAV.Tests.Database;
 using NzbWebDAV.Websocket;
+using Serilog;
+using Serilog.Core;
+using Serilog.Events;
 
 namespace NzbWebDAV.Tests.Queue;
 
@@ -96,6 +99,39 @@ public sealed class QueueStuckWatchdogTests : IAsyncLifetime
             CreateDbContextOverride = () => new DavDatabaseContext(_options),
             StuckItemCheckInterval = TimeSpan.FromMilliseconds(50),
             StuckItemThreshold = TimeSpan.FromMilliseconds(250),
+            StuckCancelGracePeriod = TimeSpan.FromMilliseconds(400),
+        };
+    }
+
+    private void WireStallingClaimOverride(StallStream stall)
+    {
+        _queueManager.GetTopQueueItemOverride = async (exclude, ct) =>
+        {
+            await using var ctx = new DavDatabaseContext(_options);
+            var client = new DavDatabaseClient(ctx);
+            var (claimed, _) = await client.GetTopQueueItem(exclude, ct);
+            if (claimed is null) return (null, null);
+            ctx.ChangeTracker.Clear();
+            return (claimed, stall);
+        };
+    }
+
+    // Each claim returns a FRESH stall stream (matching production, where every
+    // claim reads a fresh NZB blob stream) and captures it so the test can bind
+    // the current worker's CTS. Reusing one stream across claims breaks because
+    // it stays bound to the previous worker's disposed CTS.
+    private void WireStallingClaimOverridePerClaim(Action<StallStream> onClaimed)
+    {
+        _queueManager.GetTopQueueItemOverride = async (exclude, ct) =>
+        {
+            await using var ctx = new DavDatabaseContext(_options);
+            var client = new DavDatabaseClient(ctx);
+            var (claimed, _) = await client.GetTopQueueItem(exclude, ct);
+            if (claimed is null) return (null, null);
+            ctx.ChangeTracker.Clear();
+            var stall = new StallStream();
+            onClaimed(stall);
+            return (claimed, stall);
         };
     }
 
@@ -388,6 +424,268 @@ public sealed class QueueStuckWatchdogTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task EarlyStalls_PauseAndRetry_ItemStaysQueued()
+    {
+        // Stall attempts 1 and 2 (MaxStuckAttempts = 3) must keep the item queued
+        // with PauseUntil set and must NOT write history.
+        var item = CreateQueueItem("retry.nzb", "movies", "RetryJob");
+
+        await using (var ctx = new DavDatabaseContext(_options))
+        {
+            ctx.QueueItems.Add(item);
+            await ctx.SaveChangesAsync();
+        }
+
+        // Each claim gets a fresh stall stream; bind it to its worker's CTS.
+        var claimed = new TaskCompletionSource<StallStream>(TaskCreationOptions.RunContinuationsAsynchronously);
+        WireStallingClaimOverridePerClaim(s => claimed.TrySetResult(s));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var loop = _queueManager.ProcessQueueAsync(cts.Token);
+
+        for (var cycle = 0; cycle < 2; cycle++)
+        {
+            var stall = await claimed.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            claimed = new TaskCompletionSource<StallStream>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            object? inProgress = await WaitForInProgress(item.Id, TimeSpan.FromSeconds(10));
+            Assert.NotNull(inProgress);
+            var workerCts = GetWorkerCts(inProgress!);
+            stall.BindWorker(workerCts);
+
+            // Wait for the watchdog to cancel this worker.
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (DateTime.UtcNow < deadline && !workerCts.IsCancellationRequested)
+                await Task.Delay(20);
+            Assert.True(workerCts.IsCancellationRequested, $"stall cycle {cycle}: worker was not cancelled");
+
+            // Wait for the coordinator to reap the cancelled worker.
+            deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (DateTime.UtcNow < deadline && FindInProgressItem(item.Id) is not null)
+                await Task.Delay(20);
+
+            // Still queued, still no history.
+            await using (var ctx = new DavDatabaseContext(_options))
+            {
+                Assert.Equal(1, await ctx.QueueItems.CountAsync());
+                Assert.Equal(0, await ctx.HistoryItems.CountAsync());
+            }
+
+            // Clear PauseUntil so the next cycle can claim it, and wake the
+            // coordinator (which may be idle-sleeping up to a minute).
+            await using (var ctx = new DavDatabaseContext(_options))
+                await ctx.QueueItems.ExecuteUpdateAsync(s => s.SetProperty(q => q.PauseUntil, (DateTime?)null));
+            _queueManager.AwakenQueue();
+        }
+
+        await cts.CancelAsync();
+        await loop.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task ThirdStall_FailsItemIntoHistory()
+    {
+        var item = CreateQueueItem("stall3.nzb", "movies", "StallThreeJob");
+
+        await using (var ctx = new DavDatabaseContext(_options))
+        {
+            ctx.QueueItems.Add(item);
+            await ctx.SaveChangesAsync();
+        }
+
+        var claimed = new TaskCompletionSource<StallStream>(TaskCreationOptions.RunContinuationsAsynchronously);
+        WireStallingClaimOverridePerClaim(s => claimed.TrySetResult(s));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var loop = _queueManager.ProcessQueueAsync(cts.Token);
+
+        for (var cycle = 0; cycle < 3; cycle++)
+        {
+            var stall = await claimed.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            claimed = new TaskCompletionSource<StallStream>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            object? inProgress = await WaitForInProgress(item.Id, TimeSpan.FromSeconds(15));
+            Assert.NotNull(inProgress);
+            var workerCts = GetWorkerCts(inProgress!);
+            stall.BindWorker(workerCts);
+
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+            while (DateTime.UtcNow < deadline && !workerCts.IsCancellationRequested)
+                await Task.Delay(20);
+            Assert.True(workerCts.IsCancellationRequested, $"stall cycle {cycle}: worker was not cancelled");
+
+            // Wait for reap.
+            deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+            while (DateTime.UtcNow < deadline && FindInProgressItem(item.Id) is not null)
+                await Task.Delay(20);
+
+            if (cycle < 2)
+            {
+                // Retries 1 and 2: still queued, no history.
+                await using (var ctx = new DavDatabaseContext(_options))
+                {
+                    Assert.Equal(1, await ctx.QueueItems.CountAsync());
+                    Assert.Equal(0, await ctx.HistoryItems.CountAsync());
+                }
+                await using (var ctx = new DavDatabaseContext(_options))
+                    await ctx.QueueItems.ExecuteUpdateAsync(s => s.SetProperty(q => q.PauseUntil, (DateTime?)null));
+                _queueManager.AwakenQueue();
+            }
+        }
+
+        // Final stall: item must have failed into history.
+        await using (var ctx = new DavDatabaseContext(_options))
+        {
+            Assert.Equal(0, await ctx.QueueItems.CountAsync());
+            var history = await ctx.HistoryItems.SingleAsync();
+            Assert.Equal(HistoryItem.DownloadStatusOption.Failed, history.DownloadStatus);
+            Assert.False(string.IsNullOrWhiteSpace(history.FailMessage));
+        }
+
+        await cts.CancelAsync();
+        await loop.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task CancelWithoutFailFlag_LeavesItemQueued_NoHistory()
+    {
+        // A user-initiated cancel (no FailOnStuckCancel flag) must keep the item
+        // queued and write no history — only the watchdog's final stall may fail.
+        var item = CreateQueueItem("usercancel.nzb", "movies", "UserCancelJob");
+
+        await using (var ctx = new DavDatabaseContext(_options))
+        {
+            ctx.QueueItems.Add(item);
+            await ctx.SaveChangesAsync();
+        }
+
+        var claimed = new TaskCompletionSource<StallStream>(TaskCreationOptions.RunContinuationsAsynchronously);
+        WireStallingClaimOverridePerClaim(s => claimed.TrySetResult(s));
+
+        // Push the watchdog threshold beyond the test window so the watchdog never
+        // fires — this isolates the plain (non-watchdog) cancellation path.
+        _queueManager.StuckItemThreshold = TimeSpan.FromHours(1);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var loop = _queueManager.ProcessQueueAsync(cts.Token);
+
+        var stall = await claimed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        object? inProgress = await WaitForInProgress(item.Id, TimeSpan.FromSeconds(5));
+        Assert.NotNull(inProgress);
+        stall.BindWorker(GetWorkerCts(inProgress!));
+
+        // Simulate a user-initiated cancel directly on the worker CTS (bypasses
+        // the watchdog, so FailOnStuckCancel stays false). Immediately stop the
+        // coordinator so it cannot re-claim the still-queued item with a fresh
+        // worker (which would stall a stream bound to no CTS and hang shutdown).
+        await GetWorkerCts(inProgress!).CancelAsync();
+        await cts.CancelAsync();
+        await loop.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await using (var ctx = new DavDatabaseContext(_options))
+        {
+            Assert.Equal(1, await ctx.QueueItems.CountAsync());
+            Assert.Equal(0, await ctx.HistoryItems.CountAsync());
+        }
+    }
+
+    [Fact]
+    public async Task WorkerIgnoringCancellation_LogsError_AndKeepsSlot()
+    {
+        // A worker that never observes cancellation occupies its slot until the
+        // underlying I/O is released. The ignored-cancel observer must log an
+        // Error after the grace period without abandoning the slot.
+        var hung = new HungStream();
+        var item = CreateQueueItem("hung.nzb", "movies", "HungJob");
+
+        await using (var ctx = new DavDatabaseContext(_options))
+        {
+            ctx.QueueItems.Add(item);
+            await ctx.SaveChangesAsync();
+        }
+
+        _queueManager.GetTopQueueItemOverride = async (exclude, ct) =>
+        {
+            await using var ctx = new DavDatabaseContext(_options);
+            var client = new DavDatabaseClient(ctx);
+            var (claimed, _) = await client.GetTopQueueItem(exclude, ct);
+            if (claimed is null) return (null, null);
+            ctx.ChangeTracker.Clear();
+            return (claimed, hung);
+        };
+
+        var sink = new CollectingSink();
+        var previous = Log.Logger;
+        Log.Logger = new LoggerConfiguration()
+            .MinimumLevel.Error()
+            .WriteTo.Sink(sink)
+            .CreateLogger();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var loop = _queueManager.ProcessQueueAsync(cts.Token);
+        try
+        {
+            object? inProgress = await WaitForInProgress(item.Id, TimeSpan.FromSeconds(5));
+            Assert.NotNull(inProgress);
+
+            var workerCts = GetWorkerCts(inProgress!);
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (DateTime.UtcNow < deadline && !workerCts.IsCancellationRequested)
+                await Task.Delay(20);
+            Assert.True(workerCts.IsCancellationRequested);
+
+            deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (DateTime.UtcNow < deadline &&
+                   !sink.Events.Any(e => e.Level == LogEventLevel.Error
+                       && e.RenderMessage().Contains("ignored cancellation", StringComparison.OrdinalIgnoreCase)))
+            {
+                await Task.Delay(20);
+            }
+
+            Assert.Contains(sink.Events, e =>
+                e.Level == LogEventLevel.Error
+                && e.RenderMessage().Contains("ignored cancellation", StringComparison.OrdinalIgnoreCase)
+                && e.RenderMessage().Contains("HungJob", StringComparison.Ordinal));
+            Assert.NotNull(FindInProgressItem(item.Id));
+            Assert.False(GetProcessingTask(inProgress!).IsCompleted);
+
+            await using (var ctx = new DavDatabaseContext(_options))
+            {
+                Assert.Equal(1, await ctx.QueueItems.CountAsync());
+                Assert.Equal(0, await ctx.HistoryItems.CountAsync());
+            }
+        }
+        finally
+        {
+            hung.Release();
+            await cts.CancelAsync();
+            await loop.WaitAsync(TimeSpan.FromSeconds(5));
+            Log.Logger = previous;
+        }
+    }
+
+    private async Task<object?> WaitForInProgress(Guid queueItemId, TimeSpan timeout, QueueManager? manager = null)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            var found = FindInProgressItem(queueItemId, manager);
+            if (found is not null) return found;
+            await Task.Delay(20);
+        }
+        return null;
+    }
+
+
+    private static Task GetProcessingTask(object inProgressItem)
+    {
+        var prop = inProgressItem.GetType().GetProperty(
+            "ProcessingTask",
+            BindingFlags.Instance | BindingFlags.Public);
+        return (Task)prop!.GetValue(inProgressItem)!;
+    }
+
+    [Fact]
     public async Task HealthyItems_DoNotWaitForWatchdogThreshold()
     {
         var item1 = CreateQueueItem("fast1.nzb", "movies", "FastJob1");
@@ -450,12 +748,13 @@ public sealed class QueueStuckWatchdogTests : IAsyncLifetime
         await loop.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
-    private object? FindInProgressItem(Guid queueItemId)
+    private object? FindInProgressItem(Guid queueItemId, QueueManager? manager = null)
     {
+        manager ??= _queueManager;
         var field = typeof(QueueManager).GetField(
             "_inProgress",
             BindingFlags.Instance | BindingFlags.NonPublic);
-        var dict = field!.GetValue(_queueManager)!;
+        var dict = field!.GetValue(manager)!;
         var args = new object?[] { queueItemId, null };
         var found = (bool)dict.GetType().GetMethod("TryGetValue")!.Invoke(dict, args)!;
         return found ? args[1] : null;
@@ -538,6 +837,62 @@ public sealed class QueueStuckWatchdogTests : IAsyncLifetime
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    /// <summary>
+    /// Blocks reads until <see cref="Release"/> is called and ignores every
+    /// cancellation token, simulating a worker whose underlying I/O does not
+    /// observe the worker CTS. Releasing lets the test dispose the manager.
+    /// </summary>
+    private sealed class HungStream : Stream
+    {
+        private readonly TaskCompletionSource _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Release() => _release.TrySetCanceled();
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => 0;
+            set => throw new NotSupportedException();
+        }
+
+        public override async Task<int> ReadAsync(
+            byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            await _release.Task.ConfigureAwait(false);
+            return 0;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            ReadAsync(buffer, offset, count, CancellationToken.None).GetAwaiter().GetResult();
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    private sealed class CollectingSink : ILogEventSink
+    {
+        private readonly List<LogEvent> _events = [];
+
+        public IReadOnlyList<LogEvent> Events
+        {
+            get
+            {
+                lock (_events) return _events.ToArray();
+            }
+        }
+
+        public void Emit(LogEvent logEvent)
+        {
+            lock (_events) _events.Add(logEvent);
+        }
     }
 
     /// <summary>
