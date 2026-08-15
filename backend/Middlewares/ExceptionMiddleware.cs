@@ -23,6 +23,7 @@ public class ExceptionMiddleware(RequestDelegate next, ConfigManager configManag
     private static readonly ConcurrentDictionary<string, (DateTime LastLogged, int SuppressedCount)> RecentReadErrors = new();
     private static readonly ConcurrentDictionary<string, (DateTime LastLogged, int SuppressedCount)> RecentStreamingReadTimeouts = new();
     private static readonly ConcurrentDictionary<string, (DateTime LastLogged, int SuppressedCount)> RecentStreamingWriteTimeouts = new();
+    private static readonly ConcurrentDictionary<string, (DateTime LastLogged, int SuppressedCount)> RecentSkippedStreamingRepairs = new();
     private static readonly ConcurrentDictionary<Guid, DateTime> RecentRepairTriggers = new();
     private static readonly TimeSpan DedupeWindow = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan RepairDedupeWindow = TimeSpan.FromMinutes(5);
@@ -109,7 +110,7 @@ public class ExceptionMiddleware(RequestDelegate next, ConfigManager configManag
             if (context.Items["DavItem"] is DavItem davItem)
             {
                 RecordMissingArticleForFailFast(davItem, notFound.SegmentId);
-                ScheduleRepair(davItem.Id);
+                ScheduleRepair(davItem);
             }
 
             AbortStartedResponse(context);
@@ -267,7 +268,7 @@ public class ExceptionMiddleware(RequestDelegate next, ConfigManager configManag
             });
 
             if (context.Items["DavItem"] is DavItem davItem)
-                ScheduleRepair(davItem.Id);
+                ScheduleRepair(davItem);
 
             AbortStartedResponse(context);
         }
@@ -342,7 +343,7 @@ public class ExceptionMiddleware(RequestDelegate next, ConfigManager configManag
             Log.Debug(e, "Incomplete file content stack for {FilePath}", filePath);
 
             if (context.Items["DavItem"] is DavItem davItem)
-                ScheduleRepair(davItem.Id);
+                ScheduleRepair(davItem);
 
             AbortStartedResponse(context);
         }
@@ -421,7 +422,7 @@ public class ExceptionMiddleware(RequestDelegate next, ConfigManager configManag
             if ((IsTruncatedCiphertextException(e) || isIncompleteData) &&
                 context.Items["DavItem"] is DavItem truncatedItem)
             {
-                ScheduleRepair(truncatedItem.Id);
+                ScheduleRepair(truncatedItem);
             }
 
             AbortStartedResponse(context);
@@ -447,10 +448,15 @@ public class ExceptionMiddleware(RequestDelegate next, ConfigManager configManag
             context.Abort();
     }
 
-    private void ScheduleRepair(Guid davItemId)
+    private void ScheduleRepair(DavItem davItem)
     {
-        if (!configManager.IsRepairJobEnabled())
+        var davItemId = davItem.Id;
+        var repairDisabledReason = configManager.GetRepairDisabledReason();
+        if (repairDisabledReason != null)
+        {
+            LogStreamingRepairSkipped(davItem, repairDisabledReason);
             return;
+        }
 
         // Count every distinct streaming failure before applying either threshold or deduplication.
         // Repeated failures must still advance the repair threshold while duplicate DB scheduling
@@ -512,6 +518,25 @@ public class ExceptionMiddleware(RequestDelegate next, ConfigManager configManag
     internal static bool ShouldScheduleUrgentRepair(int threshold, int failureCount)
     {
         return threshold <= 0 || failureCount >= threshold;
+    }
+
+    private void LogStreamingRepairSkipped(DavItem davItem, string reason)
+    {
+        var dedupeKey = davItem.Id.ToString();
+        LogWithDedup(RecentSkippedStreamingRepairs, dedupeKey, suppressed =>
+        {
+            if (suppressed > 0)
+                Log.Warning(
+                    "Streaming failure for {FilePath} will not trigger repair: {Reason}. Configure Settings > Health & Repairs. (suppressed {SuppressedCount} duplicates in last 60s)",
+                    davItem.Path,
+                    reason,
+                    suppressed);
+            else
+                Log.Warning(
+                    "Streaming failure for {FilePath} will not trigger repair: {Reason}. Configure Settings > Health & Repairs.",
+                    davItem.Path,
+                    reason);
+        });
     }
 
     private static void LogWithDedup(
@@ -585,6 +610,11 @@ public class ExceptionMiddleware(RequestDelegate next, ConfigManager configManag
         {
             if (kvp.Value.LastLogged < cutoff)
                 RecentStreamingWriteTimeouts.TryRemove(kvp.Key, out _);
+        }
+        foreach (var kvp in RecentSkippedStreamingRepairs)
+        {
+            if (kvp.Value.LastLogged < cutoff)
+                RecentSkippedStreamingRepairs.TryRemove(kvp.Key, out _);
         }
         foreach (var kvp in RecentRepairTriggers)
         {

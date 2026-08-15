@@ -146,6 +146,30 @@ public class ExceptionMiddlewareTests
     }
 
     [Fact]
+    public async Task StreamingFailureWithRepairsDisabled_WarnsWithReasonInsteadOfSchedulingRepair()
+    {
+        var lifetimeFeature = new TestHttpRequestLifetimeFeature();
+        var context = CreateDavItemContext(hasStarted: false, lifetimeFeature);
+        var davItem = Assert.IsType<DavItem>(context.Items["DavItem"]);
+        var failureTracker = new StreamingFailureTracker();
+        // Default ConfigManager: repair.enable is off, so repair must be skipped with a reason.
+        var middleware = CreateMiddleware(
+            _ => throw new UsenetArticleNotFoundException("missing-segment"),
+            new ConfigManager(),
+            failureTracker);
+
+        var events = await CaptureLogsAsync(() => middleware.InvokeAsync(context));
+
+        var logged = Assert.Single(events, e =>
+            e.RenderMessage().Contains("will not trigger repair", StringComparison.Ordinal));
+        Assert.Equal(LogEventLevel.Warning, logged.Level);
+        Assert.Null(logged.Exception);
+        Assert.Contains(davItem.Path, logged.RenderMessage(), StringComparison.Ordinal);
+        Assert.Contains("Enable Background Repairs is off", logged.RenderMessage(), StringComparison.Ordinal);
+        Assert.Equal(0, failureTracker.GetFailureCount(davItem.Id));
+    }
+
+    [Fact]
     public async Task IncompleteMultipartPartBeforeResponseStarted_ReturnsNotFoundWithoutAborting()
     {
         var lifetimeFeature = new TestHttpRequestLifetimeFeature();
@@ -505,6 +529,33 @@ public class ExceptionMiddlewareTests
         bool expected)
     {
         Assert.Equal(expected, ExceptionMiddleware.ShouldScheduleUrgentRepair(threshold, failureCount));
+    }
+
+    [Theory]
+    [InlineData(false, true, 1, "Enable Background Repairs is off")]
+    [InlineData(true, false, 1, "Library Directory is not set")]
+    [InlineData(true, true, 0, "no Radarr/Sonarr instances are configured")]
+    public void GetRepairDisabledReason_NamesMissingPrerequisite(
+        bool isRepairEnabled,
+        bool hasLibraryDir,
+        int arrInstanceCount,
+        string expected)
+    {
+        Assert.Equal(expected, ConfigManager.GetRepairDisabledReason(isRepairEnabled, hasLibraryDir, arrInstanceCount));
+    }
+
+    [Fact]
+    public void GetRepairDisabledReason_ReturnsNullWhenFullyEnabled()
+    {
+        Assert.Null(ConfigManager.GetRepairDisabledReason(true, true, 1));
+    }
+
+    [Fact]
+    public void GetRepairDisabledReason_InstanceReflectsConfiguredPrerequisites()
+    {
+        var configManager = CreateRepairEnabledConfig();
+        Assert.Null(configManager.GetRepairDisabledReason());
+        Assert.True(configManager.IsRepairJobEnabled());
     }
 
     private static ExceptionMiddleware CreateMiddleware(
