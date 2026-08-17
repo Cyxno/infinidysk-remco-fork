@@ -8,7 +8,7 @@ import { websocketServer } from "./websocket.server";
 import { safeDecodePath, shouldProxyToBackend } from "./proxy-path";
 import { logger } from "./logger";
 import { authMiddleware } from "~/auth/auth-middleware.server";
-import { getSessionUser } from "~/auth/authentication.server";
+import { getSessionUser, isAuthenticated } from "~/auth/authentication.server";
 import { setApiKeyForAuthenticatedRequests } from "./inject-api-key.server";
 import {
   BACKEND_FAILURE_LOG_THROTTLE_MS,
@@ -118,6 +118,7 @@ const credentialRateLimiter = rateLimit({
     return !(
       (method === "POST" && credentialPostPaths.has(decodedPath))
       || (method === "GET" && oidcGetPaths.has(decodedPath))
+      || (method === "GET" && decodedPath === "/metrics")
     );
   },
   handler: (req, res, _next, options) => {
@@ -128,11 +129,19 @@ const credentialRateLimiter = rateLimit({
   },
 });
 
+// Limit credential attempts and protected metrics scrapes before the early backend proxy.
+app.use(credentialRateLimiter);
+
 app.use(async (req, res, next) => {
   if (shouldProxyToBackend(req.method, req.path)) {
+    const decodedPath = safeDecodePath(req.path);
+    if (decodedPath === "/metrics" && !await isAuthenticated(req)) {
+      res.status(401).type("text/plain").send("Metrics authentication required.");
+      return;
+    }
+
     await setApiKeyForAuthenticatedRequests(req);
 
-    const decodedPath = safeDecodePath(req.path);
     if (
       decodedPath !== null
       && req.method.toUpperCase() === "POST"
@@ -153,9 +162,6 @@ app.use(async (req, res, next) => {
   }
   next();
 });
-
-// Limit credential attempts without throttling WebDAV, API, or regular UI traffic.
-app.use(credentialRateLimiter);
 
 // OIDC endpoints must remain public so the provider can complete the callback.
 app.use(oidcRouter);
