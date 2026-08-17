@@ -22,7 +22,7 @@ public static partial class FilenameUtil
     private static readonly HashSet<string> AudioExtensions =
     [
         ".mp3", ".flac", ".aac", ".ogg", ".opus", ".wav", ".wma", ".m4a", ".alac", ".ape", ".wv",
-        ".dsd", ".dsf", ".dff", ".mka", ".ac3", ".eac3", ".dts", ".aiff"
+        ".dsd", ".dsf", ".dff", ".mka", ".m4b", ".ac3", ".eac3", ".dts", ".aiff", ".aif"
     ];
 
     /// <summary>
@@ -41,7 +41,7 @@ public static partial class FilenameUtil
 
     public static bool IsImportantFileType(string filename)
     {
-        return IsVideoFile(filename)
+        return IsMediaFile(filename)
                || IsRarFile(filename)
                || Is7zFile(filename)
                || IsSplitVideoFile(filename);
@@ -57,16 +57,21 @@ public static partial class FilenameUtil
         return AudioExtensions.Contains(Path.GetExtension(filename).ToLowerInvariant());
     }
 
+    public static bool IsMediaFile(string filename)
+    {
+        return IsVideoFile(filename) || IsAudioFile(filename);
+    }
+
     /// <summary>
     /// True when a file is a candidate for background health checks: video, audio, or archive
     /// (RAR/7z) files that carry playable media. Excludes subtitles, images, NFOs, and other
     /// metadata that should not consume NNTP STAT connections or appear in the Health UI.
-    /// Distinct from <see cref="IsImportantFileType"/> — adding audio there would change
-    /// queue-processing semantics (#122 axis).
+    /// Currently equivalent to <see cref="IsImportantFileType"/> now that audio is importable;
+    /// the named method remains to document health-check intent at call sites.
     /// </summary>
     public static bool IsHealthCheckCandidate(string filename)
     {
-        return IsImportantFileType(filename) || IsAudioFile(filename);
+        return IsImportantFileType(filename);
     }
 
     public static bool IsRarFile(string? filename)
