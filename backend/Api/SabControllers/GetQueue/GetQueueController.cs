@@ -50,7 +50,8 @@ public class GetQueueController(
         IQueryable<QueueItem> queuedQuery = dbClient.Ctx.QueueItems.AsNoTracking();
         if (request.Category is not null)
             queuedQuery = queuedQuery.Where(x => x.Category == request.Category);
-        queuedQuery = SabListQuery.ApplySearch(queuedQuery, request.Search);
+        queuedQuery = SabListQuery.ApplySearch(
+            queuedQuery, request.Search, dbClient.Ctx.Database.IsNpgsql());
         if (activeIds.Count > 0)
             queuedQuery = queuedQuery.Where(x => !activeIds.Contains(x.Id));
         queuedQuery = request.Status switch
@@ -73,7 +74,11 @@ public class GetQueueController(
         var queuedStart = Math.Max(0, request.Start - activeItems.Count);
         var queuedItemsTask = remainingLimit == 0
             ? Task.FromResult(Array.Empty<QueueItem>())
-            : SabListQuery.ApplyQueueSort(queuedQuery, request.Sort, request.Direction)
+            : SabListQuery.ApplyQueueSort(
+                    queuedQuery,
+                    request.Sort,
+                    request.Direction,
+                    dbClient.Ctx.Database.IsNpgsql())
                 .Skip(queuedStart)
                 .Take(remainingLimit)
                 .ToArrayAsync(ct);

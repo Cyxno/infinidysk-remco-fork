@@ -87,21 +87,21 @@ public sealed class DavDatabaseClient(DavDatabaseContext ctx)
             return await Ctx.Items.SumAsync(x => x.FileSize, ct).ConfigureAwait(false) ?? 0;
         }
 
-        const string sql = @"
-            WITH RECURSIVE RecursiveChildren AS (
-                SELECT Id, FileSize
-                FROM DavItems
-                WHERE ParentId = @parentId
+        const string sql = """
+            WITH RECURSIVE "RecursiveChildren" AS (
+                SELECT "Id", "FileSize"
+                FROM "DavItems"
+                WHERE "ParentId" = @parentId
 
                 UNION ALL
 
-                SELECT d.Id, d.FileSize
-                FROM DavItems d
-                INNER JOIN RecursiveChildren rc ON d.ParentId = rc.Id
+                SELECT d."Id", d."FileSize"
+                FROM "DavItems" d
+                INNER JOIN "RecursiveChildren" rc ON d."ParentId" = rc."Id"
             )
-            SELECT IFNULL(SUM(FileSize), 0)
-            FROM RecursiveChildren;
-        ";
+            SELECT COALESCE(SUM("FileSize"), 0)
+            FROM "RecursiveChildren";
+        """;
         var connection = Ctx.Database.GetDbConnection();
         if (connection.State != System.Data.ConnectionState.Open) await connection.OpenAsync(ct).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
@@ -545,19 +545,21 @@ public sealed class DavDatabaseClient(DavDatabaseContext ctx)
         Guid rootId,
         CancellationToken ct = default)
     {
+        // Identifiers stay double-quoted: PostgreSQL folds unquoted names to lowercase,
+        // but EF Core creates the table and columns with case-sensitive quoted names.
         const string sql = """
-            WITH RECURSIVE Subtree AS (
-                SELECT Id, Path, HistoryItemId, Type
-                FROM DavItems
-                WHERE Id = @rootId
+            WITH RECURSIVE "Subtree" AS (
+                SELECT "Id", "Path", "HistoryItemId", "Type"
+                FROM "DavItems"
+                WHERE "Id" = @rootId
 
                 UNION ALL
 
-                SELECT d.Id, d.Path, d.HistoryItemId, d.Type
-                FROM DavItems d
-                INNER JOIN Subtree s ON d.ParentId = s.Id
+                SELECT d."Id", d."Path", d."HistoryItemId", d."Type"
+                FROM "DavItems" d
+                INNER JOIN "Subtree" s ON d."ParentId" = s."Id"
             )
-            SELECT Id, Path, HistoryItemId, Type FROM Subtree;
+            SELECT "Id", "Path", "HistoryItemId", "Type" FROM "Subtree";
             """;
 
         var connection = Ctx.Database.GetDbConnection();

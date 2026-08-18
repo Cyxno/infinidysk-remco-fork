@@ -24,7 +24,8 @@ public class GetHistoryController(
             query = query.Where(q => request.NzoIds.Contains(q.Id));
         if (request.Category != null)
             query = query.Where(q => q.Category == request.Category);
-        query = SabListQuery.ApplySearch(query, request.Search);
+        query = SabListQuery.ApplySearch(
+            query, request.Search, dbClient.Ctx.Database.IsNpgsql());
         if (request.HasUnsupportedStatus)
             query = query.Where(_ => false);
         else if (request.Status is { } status)
@@ -35,7 +36,11 @@ public class GetHistoryController(
             .CountAsync(request.CancellationToken);
 
         // get history items
-        var historyItemsPromise = SabListQuery.ApplyHistorySort(query, request.Sort, request.Direction)
+        var historyItemsPromise = SabListQuery.ApplyHistorySort(
+                query,
+                request.Sort,
+                request.Direction,
+                dbClient.Ctx.Database.IsNpgsql())
             .Skip(request.Start)
             .Take(request.Limit)
             .ToArrayAsync(request.CancellationToken);

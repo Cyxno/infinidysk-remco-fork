@@ -23,6 +23,19 @@ internal static class DatabaseStartupGuards
         string tableName,
         CancellationToken cancellationToken = default)
     {
+        if (databaseContext.Database.IsNpgsql())
+        {
+            // quote_ident double-quotes the (case-sensitive) table name so to_regclass
+            // resolves EF Core's quoted identifiers instead of folding to lowercase.
+            // The result alias must stay quoted: EF wraps SqlQuery in a subselect and
+            // references s."Value" case-sensitively on PostgreSQL.
+            var exists = await databaseContext.Database
+                .SqlQuery<bool>($"SELECT to_regclass(quote_ident({tableName})) IS NOT NULL AS \"Value\"")
+                .FirstAsync(cancellationToken)
+                .ConfigureAwait(false);
+            return exists;
+        }
+
         var count = await databaseContext.Database
             .SqlQuery<int>(
                 $"""

@@ -3,6 +3,7 @@ using NzbWebDAV.Database.Models;
 
 namespace NzbWebDAV.Api.SabControllers;
 
+#pragma warning disable CA1311 // PostgreSQL translates ToLower to SQL LOWER.
 internal static class SabListQuery
 {
     internal static string? NormalizeSearch(string? value) =>
@@ -18,35 +19,59 @@ internal static class SabListQuery
             .Replace("%", "\\%", StringComparison.Ordinal)
             .Replace("_", "\\_", StringComparison.Ordinal);
 
-    internal static IQueryable<QueueItem> ApplySearch(IQueryable<QueueItem> query, string? search)
+    // SQLite LIKE is ASCII case-insensitive by default; PostgreSQL LIKE is
+    // case-sensitive, so the Postgres path uses ILIKE to preserve behavior.
+    internal static IQueryable<QueueItem> ApplySearch(
+        IQueryable<QueueItem> query, string? search, bool isPostgres = false)
     {
         if (search is null) return query;
         var pattern = $"%{EscapeLikePattern(search)}%";
-        return query.Where(x =>
-            EF.Functions.Like(x.JobName, pattern, "\\") ||
-            EF.Functions.Like(x.FileName, pattern, "\\"));
+        return isPostgres
+            ? query.Where(x =>
+                EF.Functions.ILike(x.JobName, pattern, "\\") ||
+                EF.Functions.ILike(x.FileName, pattern, "\\"))
+            : query.Where(x =>
+                EF.Functions.Like(x.JobName, pattern, "\\") ||
+                EF.Functions.Like(x.FileName, pattern, "\\"));
     }
 
-    internal static IQueryable<HistoryItem> ApplySearch(IQueryable<HistoryItem> query, string? search)
+    internal static IQueryable<HistoryItem> ApplySearch(
+        IQueryable<HistoryItem> query, string? search, bool isPostgres = false)
     {
         if (search is null) return query;
         var pattern = $"%{EscapeLikePattern(search)}%";
-        return query.Where(x =>
-            EF.Functions.Like(x.JobName, pattern, "\\") ||
-            EF.Functions.Like(x.FileName, pattern, "\\"));
+        return isPostgres
+            ? query.Where(x =>
+                EF.Functions.ILike(x.JobName, pattern, "\\") ||
+                EF.Functions.ILike(x.FileName, pattern, "\\"))
+            : query.Where(x =>
+                EF.Functions.Like(x.JobName, pattern, "\\") ||
+                EF.Functions.Like(x.FileName, pattern, "\\"));
     }
 
-    internal static IQueryable<QueueItem> ApplyQueueSort(IQueryable<QueueItem> query, string? sort, string? dir)
+    internal static IQueryable<QueueItem> ApplyQueueSort(
+        IQueryable<QueueItem> query,
+        string? sort,
+        string? dir,
+        bool isPostgres = false)
     {
         var ascending = dir == "asc";
         return sort switch
         {
             "name" => ascending
-                ? query.OrderBy(x => EF.Functions.Collate(x.FileName, "NOCASE")).ThenBy(x => x.CreatedAt).ThenBy(x => x.Id)
-                : query.OrderByDescending(x => EF.Functions.Collate(x.FileName, "NOCASE")).ThenBy(x => x.CreatedAt).ThenBy(x => x.Id),
+                ? isPostgres
+                    ? query.OrderBy(x => x.FileName.ToLower()).ThenBy(x => x.CreatedAt).ThenBy(x => x.Id)
+                    : query.OrderBy(x => EF.Functions.Collate(x.FileName, "NOCASE")).ThenBy(x => x.CreatedAt).ThenBy(x => x.Id)
+                : isPostgres
+                    ? query.OrderByDescending(x => x.FileName.ToLower()).ThenBy(x => x.CreatedAt).ThenBy(x => x.Id)
+                    : query.OrderByDescending(x => EF.Functions.Collate(x.FileName, "NOCASE")).ThenBy(x => x.CreatedAt).ThenBy(x => x.Id),
             "category" => ascending
-                ? query.OrderBy(x => EF.Functions.Collate(x.Category, "NOCASE")).ThenBy(x => x.CreatedAt).ThenBy(x => x.Id)
-                : query.OrderByDescending(x => EF.Functions.Collate(x.Category, "NOCASE")).ThenBy(x => x.CreatedAt).ThenBy(x => x.Id),
+                ? isPostgres
+                    ? query.OrderBy(x => x.Category.ToLower()).ThenBy(x => x.CreatedAt).ThenBy(x => x.Id)
+                    : query.OrderBy(x => EF.Functions.Collate(x.Category, "NOCASE")).ThenBy(x => x.CreatedAt).ThenBy(x => x.Id)
+                : isPostgres
+                    ? query.OrderByDescending(x => x.Category.ToLower()).ThenBy(x => x.CreatedAt).ThenBy(x => x.Id)
+                    : query.OrderByDescending(x => EF.Functions.Collate(x.Category, "NOCASE")).ThenBy(x => x.CreatedAt).ThenBy(x => x.Id),
             "status" => ascending
                 ? query.OrderBy(x => x.Priority == QueueItem.PriorityOption.Paused ? 1 : 0).ThenBy(x => x.CreatedAt).ThenBy(x => x.Id)
                 : query.OrderByDescending(x => x.Priority == QueueItem.PriorityOption.Paused ? 1 : 0).ThenBy(x => x.CreatedAt).ThenBy(x => x.Id),
@@ -57,17 +82,29 @@ internal static class SabListQuery
         };
     }
 
-    internal static IQueryable<HistoryItem> ApplyHistorySort(IQueryable<HistoryItem> query, string? sort, string? dir)
+    internal static IQueryable<HistoryItem> ApplyHistorySort(
+        IQueryable<HistoryItem> query,
+        string? sort,
+        string? dir,
+        bool isPostgres = false)
     {
         var ascending = dir == "asc";
         return sort switch
         {
             "name" => ascending
-                ? query.OrderBy(x => EF.Functions.Collate(x.JobName, "NOCASE")).ThenByDescending(x => x.CreatedAt).ThenBy(x => x.Id)
-                : query.OrderByDescending(x => EF.Functions.Collate(x.JobName, "NOCASE")).ThenByDescending(x => x.CreatedAt).ThenBy(x => x.Id),
+                ? isPostgres
+                    ? query.OrderBy(x => x.JobName.ToLower()).ThenByDescending(x => x.CreatedAt).ThenBy(x => x.Id)
+                    : query.OrderBy(x => EF.Functions.Collate(x.JobName, "NOCASE")).ThenByDescending(x => x.CreatedAt).ThenBy(x => x.Id)
+                : isPostgres
+                    ? query.OrderByDescending(x => x.JobName.ToLower()).ThenByDescending(x => x.CreatedAt).ThenBy(x => x.Id)
+                    : query.OrderByDescending(x => EF.Functions.Collate(x.JobName, "NOCASE")).ThenByDescending(x => x.CreatedAt).ThenBy(x => x.Id),
             "category" => ascending
-                ? query.OrderBy(x => EF.Functions.Collate(x.Category, "NOCASE")).ThenByDescending(x => x.CreatedAt).ThenBy(x => x.Id)
-                : query.OrderByDescending(x => EF.Functions.Collate(x.Category, "NOCASE")).ThenByDescending(x => x.CreatedAt).ThenBy(x => x.Id),
+                ? isPostgres
+                    ? query.OrderBy(x => x.Category.ToLower()).ThenByDescending(x => x.CreatedAt).ThenBy(x => x.Id)
+                    : query.OrderBy(x => EF.Functions.Collate(x.Category, "NOCASE")).ThenByDescending(x => x.CreatedAt).ThenBy(x => x.Id)
+                : isPostgres
+                    ? query.OrderByDescending(x => x.Category.ToLower()).ThenByDescending(x => x.CreatedAt).ThenBy(x => x.Id)
+                    : query.OrderByDescending(x => EF.Functions.Collate(x.Category, "NOCASE")).ThenByDescending(x => x.CreatedAt).ThenBy(x => x.Id),
             "status" => ascending
                 ? query.OrderBy(x => x.DownloadStatus).ThenByDescending(x => x.CreatedAt).ThenBy(x => x.Id)
                 : query.OrderByDescending(x => x.DownloadStatus).ThenByDescending(x => x.CreatedAt).ThenBy(x => x.Id),

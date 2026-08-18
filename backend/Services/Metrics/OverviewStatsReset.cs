@@ -108,6 +108,9 @@ public static class OverviewStatsReset
         int batch;
         do
         {
+            // MetricsDbContext is always SQLite; rowid batching keeps each write
+            // transaction short so concurrent MetricsWriter flushes never exhaust
+            // their busy_timeout behind us.
             batch = await db.Database.ExecuteSqlRawAsync(
                 """
                 DELETE FROM SegmentFetches WHERE rowid IN
