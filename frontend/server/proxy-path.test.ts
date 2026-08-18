@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isBackendApiDocsPath,
   isBackendApiPath,
   matchesBackendPathPrefix,
   safeDecodePath,
@@ -60,6 +61,25 @@ describe("isBackendApiPath", () => {
   });
 });
 
+describe("isBackendApiDocsPath", () => {
+  it.each([
+    "/openapi",
+    "/openapi/admin.json",
+    "/scalar",
+    "/scalar/",
+    "/scalar/admin",
+  ])("matches API docs path %s", (path) => {
+    expect(isBackendApiDocsPath(path)).toBe(true);
+  });
+
+  it.each(["/openapifoo", "/scalarfoo", "/api/get-config", "/%zz"])(
+    "rejects non-docs path %s",
+    (path) => {
+      expect(isBackendApiDocsPath(path)).toBe(false);
+    },
+  );
+});
+
 describe("shouldProxyToBackend", () => {
   it.each(["PROPFIND", "propfind", "OPTIONS", "options"])(
     "proxies %s requests regardless of path",
@@ -115,11 +135,17 @@ describe("shouldSkipCompression", () => {
   it("skips compression for backend paths", () => {
     expect(shouldSkipCompression("/view/movies")).toBe(true);
     expect(shouldSkipCompression("/api/get-config")).toBe(true);
+    expect(shouldSkipCompression("/openapi/admin.json")).toBe(true);
+    expect(shouldSkipCompression("/scalar/")).toBe(true);
   });
 
   it("does not skip for frontend paths, false positives, or malformed encoding", () => {
     expect(shouldSkipCompression("/login")).toBe(false);
     expect(shouldSkipCompression("/viewport.css")).toBe(false);
     expect(shouldSkipCompression("/%zz")).toBe(false);
+  });
+
+  it("does not double-decode API documentation paths", () => {
+    expect(shouldSkipCompression("/scalar/%25")).toBe(true);
   });
 });
