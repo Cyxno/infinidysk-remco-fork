@@ -67,6 +67,9 @@ Please add feature requests and bug reports to the [issue tracker](https://githu
 - **[Backup and restore](https://www.infinidysk.com/configuration/backup/)** — Schedule database backups and download, upload, or restore them from the Settings UI.
 - **[Headless configuration](https://www.infinidysk.com/configuration/headless/)** — Provision authoritative settings with `NZBDAV_CONFIG__...` environment variables.
 - **[OIDC / SSO](https://www.infinidysk.com/configuration/oidc/)** — Authenticate browser sessions through standards-compliant identity providers such as Authentik, Authelia, and Keycloak.
+- **[Prometheus metrics](https://www.infinidysk.com/operations/prometheus/)** — Scrape `/metrics` for streaming, seek latency, NNTP pools, circuit breakers, and process/runtime stats. Direct backend scrapes are anonymous unless `METRICS_REQUIRE_API_KEY=true`.
+- **[PostgreSQL](https://www.infinidysk.com/operations/postgresql/)** — Optional external PostgreSQL for the main operational database on new installs. SQLite stays the default; there is no SQLite-to-PostgreSQL migration yet. Auxiliary stores (`metrics.sqlite`, `warden.db`) remain in `/config`.
+- **[Admin API reference (Scalar)](https://www.infinidysk.com/configuration/environment-variables/)** — Opt-in Scalar explorer at `/scalar/` plus `/openapi/admin.json`, enabled with `ENABLE_API_DOCS=true`. Disabled by default in Docker.
 - **Flexible hosting** — Run with Docker, prebuilt Linux archives, or DUMB, and build for reverse-proxy sub-path hosting when needed.
 
 ## Quick start
@@ -127,7 +130,7 @@ Full documentation is published at [www.infinidysk.com](https://www.infinidysk.c
 - **Configure** — Settings walkthroughs, [headless environment configuration](https://www.infinidysk.com/configuration/headless/), OIDC, backup and restore, URL base, and provider tuning.
 - **Integrate** — Sonarr/Radarr automation, Rclone symlinks, STRM files, Plex, Emby, Jellyfin, and Stremio through AIOStreams.
 - **Search and prepare** — Indexers, token-scoped search profiles, Watchdog, Preflight, Warden, and [Watchtower](https://www.infinidysk.com/features/watchtower/).
-- **Operate and troubleshoot** — Health checks and repairs, live logs, stream tracing, support packs, and performance tuning.
+- **Operate and troubleshoot** — Health checks and repairs, live logs, stream tracing, support packs, performance tuning, [Prometheus metrics](https://www.infinidysk.com/operations/prometheus/), and [PostgreSQL](https://www.infinidysk.com/operations/postgresql/).
 - **Compare** — [InfiniDysk, AltMount, and classic download clients](https://www.infinidysk.com/guides/compare/).
 
 ## Why another fork?
@@ -151,7 +154,7 @@ Special thanks to the forks and contributors whose ideas we consolidated:
 
 ## Development
 
-The project consists of a .NET 10 backend (WebDAV, Usenet streaming, SAB API) and a React Router 7 frontend (admin UI). See [CONTRIBUTING.md](CONTRIBUTING.md) for local development setup and [CHANGELOG.md](CHANGELOG.md) for release history. Source for the published documentation lives in [`docs/`](docs/).
+The project consists of a .NET 10 backend (WebDAV, Usenet streaming, SAB API) and a React Router 7 frontend (admin UI). See [CONTRIBUTING.md](CONTRIBUTING.md) for local development setup and [CHANGELOG.md](CHANGELOG.md) for release history. Source for the published documentation lives in [`docs/`](docs/). Local `run-backend.sh` enables the Scalar admin API reference at `/scalar/`; Docker requires `ENABLE_API_DOCS=true`.
 
 ## License
 
