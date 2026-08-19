@@ -547,20 +547,12 @@ public abstract class NntpClient : INntpClient
         if (segmentIds.Count == 0) return;
 
         var processed = 0;
-        var missing = new List<string>();
+        PipelinedStatSweep sweep;
         try
         {
-            await foreach (var result in StatsPipelinedAsync(segmentIds, depth, cancellationToken)
-                               .WithCancellation(cancellationToken).ConfigureAwait(false))
-            {
-                progress?.Report(++processed);
-                if (result.Exists) continue;
-
-                // Exists=false means a definitive miss on the primary (connection-level
-                // codes throw from BaseNntpClient). Collect every miss so backups can
-                // still satisfy individual segments without skipping the rest of the sample.
-                missing.Add(result.SegmentId);
-            }
+            sweep = await SweepPipelinedStatsAsync(
+                    segmentIds, depth, progress, count => processed = count, cancellationToken)
+                .ConfigureAwait(false);
         }
 #pragma warning disable CA2016 // CA2016: classify cancellation regardless of the ambient token -- forwarding it would misclassify cancellations from internal timeout/child tokens
         catch (Exception e) when (!e.IsCancellationException() && e is not OutOfMemoryException)
@@ -585,16 +577,114 @@ public abstract class NntpClient : INntpClient
             return;
         }
 
-        if (missing.Count == 0) return;
+        if (sweep.Missing.Count == 0) return;
 
         // Recheck only the misses so backups can still satisfy those articles.
         // Continue progress from the already-reported pipelined count.
         var recheckProgress = progress == null
             ? null
-            : new MappedProgress(progress, n => processed + n);
-        await CheckAllSegmentsAsync(missing, fallbackConcurrency, recheckProgress, cancellationToken)
+            : new MappedProgress(progress, n => sweep.Processed + n);
+        await CheckAllSegmentsAsync(sweep.Missing, fallbackConcurrency, recheckProgress, cancellationToken)
             .ConfigureAwait(false);
     }
+
+    public virtual async Task<IReadOnlyList<string>> CollectMissingSegmentsPipelinedAsync
+    (
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        int fallbackConcurrency,
+        IProgress<int>? progress,
+        CancellationToken cancellationToken
+    )
+    {
+        if (segmentIds.Count == 0) return [];
+
+        var processed = 0;
+        PipelinedStatSweep sweep;
+        try
+        {
+            sweep = await SweepPipelinedStatsAsync(
+                    segmentIds, depth, progress, count => processed = count, cancellationToken)
+                .ConfigureAwait(false);
+        }
+#pragma warning disable CA2016 // CA2016: classify cancellation regardless of the ambient token -- forwarding it would misclassify cancellations from internal timeout/child tokens
+        catch (Exception e) when (!e.IsCancellationException() && e is not OutOfMemoryException)
+#pragma warning restore CA2016
+        {
+            Log.Debug(
+                e,
+                "Pipelined STAT sweep failed; collecting with concurrent STAT fallback for {Total} segments",
+                segmentIds.Count);
+            var fallbackProgress = progress == null
+                ? null
+                : new MappedProgress(progress, n => Math.Max(processed, n));
+            return await CollectMissingSegmentsAsync(
+                    segmentIds, fallbackConcurrency, fallbackProgress, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (sweep.Missing.Count == 0) return [];
+
+        var recheckProgress = progress == null
+            ? null
+            : new MappedProgress(progress, n => sweep.Processed + n);
+        return await CollectMissingSegmentsAsync(
+                sweep.Missing, fallbackConcurrency, recheckProgress, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<PipelinedStatSweep> SweepPipelinedStatsAsync(
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        IProgress<int>? progress,
+        Action<int>? onProgress,
+        CancellationToken cancellationToken)
+    {
+        var processed = 0;
+        var missing = new List<string>();
+        await foreach (var result in StatsPipelinedAsync(segmentIds, depth, cancellationToken)
+                           .WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            progress?.Report(++processed);
+            onProgress?.Invoke(processed);
+            if (!result.Exists) missing.Add(result.SegmentId);
+        }
+
+        return new PipelinedStatSweep(processed, missing);
+    }
+
+    private async Task<IReadOnlyList<string>> CollectMissingSegmentsAsync(
+        IReadOnlyList<string> segmentIds,
+        int concurrency,
+        IProgress<int>? progress,
+        CancellationToken cancellationToken)
+    {
+        var tasks = segmentIds
+            .Select(async (segmentId, index) => (
+                Index: index,
+                SegmentId: segmentId,
+                Result: await StatAsync(segmentId, cancellationToken).ConfigureAwait(false)))
+            .WithConcurrencyAsync(concurrency, cancellationToken);
+
+        var processed = 0;
+        var missing = new List<(int Index, string SegmentId)>();
+        await foreach (var task in tasks.ConfigureAwait(false))
+        {
+            progress?.Report(++processed);
+            if (task.Result.ResponseType == UsenetResponseType.ArticleExists) continue;
+            if (UsenetArticleAvailability.IsDefinitiveMissing(task.Result))
+            {
+                missing.Add((task.Index, task.SegmentId));
+                continue;
+            }
+
+            throw new UsenetUnexpectedResponseException(task.SegmentId, task.Result.ResponseMessage);
+        }
+
+        return missing.OrderBy(result => result.Index).Select(result => result.SegmentId).ToArray();
+    }
+
+    private sealed record PipelinedStatSweep(int Processed, List<string> Missing);
 
     private sealed class MappedProgress(IProgress<int> target, Func<int, int> map) : IProgress<int>
     {

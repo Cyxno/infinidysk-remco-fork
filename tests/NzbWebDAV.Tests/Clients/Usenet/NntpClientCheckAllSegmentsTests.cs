@@ -169,6 +169,99 @@ public class NntpClientCheckAllSegmentsTests
         Assert.Equal([1, 2, 2, 2, 3], reports);
     }
 
+    [Fact]
+    public async Task CollectMissingSegmentsPipelinedAsync_SweepThrowsAfterProgress_FallbackProgressIsMonotonic()
+    {
+        var reports = new List<int>();
+        var progress = new CollectingProgress(reports);
+        var client = new TrackingPipelinedStatClient(
+            pipelinedExists: [true, true, true],
+            recheckCodes: [223, 223, 223],
+            sweepException: new UsenetProtocolException("connection closed mid-sweep"),
+            throwAfterYieldCount: 2);
+
+        var missing = await client.CollectMissingSegmentsPipelinedAsync(
+            ["a@example", "b@example", "c@example"], 8, 2, progress, CancellationToken.None);
+
+        Assert.Empty(missing);
+        Assert.Equal(["a@example", "b@example", "c@example"], client.RecheckedSegmentIds);
+        // Pipelined reports 1,2 then throw; fallback clamps so n=1,2 stay at 2 before advancing to 3.
+        Assert.Equal([1, 2, 2, 2, 3], reports);
+    }
+
+    [Fact]
+    public async Task CollectMissingSegmentsPipelinedAsync_CollectsConfirmedMissesInInputOrder()
+    {
+        var client = new TrackingPipelinedStatClient(
+            pipelinedExists: [false, true, false],
+            recheckCodes: [430, 223]);
+
+        var missing = await client.CollectMissingSegmentsPipelinedAsync(
+            ["a@example", "b@example", "c@example"], 8, 2, null, CancellationToken.None);
+
+        Assert.Equal(["a@example"], missing);
+        Assert.Equal(["a@example", "c@example"], client.RecheckedSegmentIds);
+    }
+
+    [Fact]
+    public async Task CollectMissingSegmentsPipelinedAsync_NonDefinitiveRecheckThrows()
+    {
+        var client = new TrackingPipelinedStatClient(
+            pipelinedExists: [false],
+            recheckCodes: [400]);
+
+        await Assert.ThrowsAsync<UsenetUnexpectedResponseException>(() =>
+            client.CollectMissingSegmentsPipelinedAsync(
+                ["a@example"], 8, 1, null, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CollectMissingSegmentsPipelinedAsync_WithAllExists_ReturnsEmptyWithoutRecheck()
+    {
+        var client = new TrackingPipelinedStatClient(
+            pipelinedExists: [true, true],
+            recheckCodes: []);
+
+        var missing = await client.CollectMissingSegmentsPipelinedAsync(
+            ["a@example", "b@example"], 8, 2, null, CancellationToken.None);
+
+        Assert.Empty(missing);
+        Assert.Empty(client.RecheckedSegmentIds);
+        Assert.Equal(0, client.CheckAllSegmentsCallCount);
+    }
+
+    [Fact]
+    public async Task CollectMissingSegmentsPipelinedAsync_WithEmptyInput_ReturnsEmpty()
+    {
+        var client = new TrackingPipelinedStatClient(
+            pipelinedExists: [],
+            recheckCodes: []);
+
+        var missing = await client.CollectMissingSegmentsPipelinedAsync(
+            [], 8, 2, null, CancellationToken.None);
+
+        Assert.Empty(missing);
+        Assert.Equal(0, client.PipelinedStatsCallCount);
+    }
+
+    [Fact]
+    public async Task CollectMissingSegmentsPipelinedAsync_SweepThrows_CollectingFallbackReturnsFullSet()
+    {
+        var client = new TrackingPipelinedStatClient(
+            pipelinedExists: null,
+            recheckCodes: [430, 223, 430],
+            sweepException: new UsenetProtocolException("connection closed mid-sweep"));
+
+        var missing = await client.CollectMissingSegmentsPipelinedAsync(
+            ["a@example", "b@example", "c@example"], 8, 2, null, CancellationToken.None);
+
+        // The collecting fallback STATs every segment concurrently (not just a partial
+        // sweep's misses) and returns the full confirmed set in input order.
+        Assert.Equal(["a@example", "c@example"], missing);
+        Assert.Equal(["a@example", "b@example", "c@example"], client.RecheckedSegmentIds);
+        Assert.Equal(0, client.CheckAllSegmentsCallCount);
+    }
+
     private sealed class CollectingProgress(List<int> reports) : IProgress<int>
     {
         public void Report(int value) => reports.Add(value);
@@ -259,8 +352,17 @@ public class NntpClientCheckAllSegmentsTests
             throw new NotSupportedException();
 
         public override Task<UsenetStatResponse> StatAsync(
-            SegmentId segmentId, CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+            SegmentId segmentId, CancellationToken cancellationToken)
+        {
+            RecheckedSegmentIds.Add(segmentId);
+            var code = recheckCodes[_recheckIndex++];
+            return Task.FromResult(new UsenetStatResponse
+            {
+                ResponseCode = code,
+                ResponseMessage = $"{code} <{segmentId}>",
+                ArticleExists = code == (int)UsenetResponseType.ArticleExists,
+            });
+        }
 
         public override Task<UsenetHeadResponse> HeadAsync(
             SegmentId segmentId, CancellationToken cancellationToken) =>

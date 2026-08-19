@@ -113,6 +113,16 @@ public interface INntpClient : IDisposable
         IReadOnlyList<string> segmentIds, int depth, int fallbackConcurrency, IProgress<int>? progress,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Full-sweep existence check that returns every confirmed-missing segment id
+    /// (in input order) instead of throwing on the first miss. Misses from the
+    /// primary-only pipelined sweep are rechecked with per-STAT provider failover.
+    /// Non-definitive responses and transport failures still throw.
+    /// </summary>
+    Task<IReadOnlyList<string>> CollectMissingSegmentsPipelinedAsync(
+        IReadOnlyList<string> segmentIds, int depth, int fallbackConcurrency, IProgress<int>? progress,
+        CancellationToken cancellationToken);
+
     // pipelining config (0 = disabled). Resolved from ConfigManager at the downloading layer.
     int PipeliningDepth { get; }
 }

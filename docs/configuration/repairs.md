@@ -17,6 +17,10 @@ Background health monitoring and replacement of unhealthy library items.
 | Check older releases less thoroughly [since 0.8.0](https://github.com/infinidysk/infinidysk/releases/tag/v0.8.0){ .nzbdav-since } | `repair.healthcheck-aging` | off | Aging taper |
 | Repair After Streaming Failures | `repair.auto-remove-after-failures` | `0` | Consecutive streaming failures before urgent repair; `0` = immediate repair |
 | Auto-remove unlinked files only | `repair.auto-remove-unlinked-only` | on | At the threshold, linked items are removed and blocklisted through *Arr instead of force-deleted |
+| Degraded damage tolerance [since 1.2.0](https://github.com/infinidysk/infinidysk/releases/tag/v1.2.0){ .nzbdav-since } | `repair.degraded-tolerance-enabled` | on | Keep slightly damaged videos playable instead of replacing the release |
+| Max consecutive missing segments | `repair.degraded-max-consecutive-missing` | `2` | Longest tolerable run of adjacent holes (1–2) |
+| Max total missing segments | `repair.degraded-max-total-missing` | `5` | Total tolerable holes per file (1–1000) |
+| Max missing data (% of file) | `repair.degraded-max-missing-byte-percent` | `1.0` | Tolerable hole share of file bytes (0.01–50) |
 | Library Directory | `media.library-dir` | empty | Organized library root in the container — parent of your Arr root folders. Never the rclone mount or `/completed-symlinks` |
 
 ## Re-check after provider changes [since 1.2.0](https://github.com/infinidysk/infinidysk/releases/tag/v1.2.0){ .nzbdav-since }
@@ -44,6 +48,48 @@ that option to force-delete linked items at the threshold.
 Successful full-file playback and a successful background health check reset the in-memory failure
 count. The count resets when InfiniDysk restarts, so it is intentionally not a durable replacement for
 health checks.
+
+## Degraded damage tolerance [since 1.2.0](https://github.com/infinidysk/infinidysk/releases/tag/v1.2.0){ .nzbdav-since }
+
+Health checks of plain video files no longer treat every missing Usenet segment as fatal.
+When a check covers **every** segment of an eligible file (files up to 8000 segments at any
+depth, or any file at **Complete** depth), InfiniDysk sweeps up all confirmed misses and
+classifies the damage instead of aborting on the first one. With `repair.healthcheck-aging`
+enabled, releases old enough to be sampled are not classified.
+
+- **Healthy** — no confirmed holes. A segment whose primary article is gone but that is still
+  fetchable through a fallback Message-Id counts as servable, not a hole.
+- **Degraded** — holes within all three caps (longest consecutive run, total count, and share
+  of the file's bytes) in a container that tolerant decoders can resync past. The file stays
+  mounted, playback zero-fills the gaps, and **no Arr repair is triggered**. The confirmed
+  holes are recorded on the item so the status survives restarts.
+- **Failed** — over any cap, any hole in an unsafe layout, or an unrecognized container.
+  These take the normal repair path (PAR2 reconstruction first when enabled, then Arr
+  remove-and-replace), exactly as before.
+
+Eligible containers: `.mkv`, `.mk3d`, `.webm`, `.ts`, `.m2ts` (resync at cluster/packet
+boundaries) and `.mp4`/`.m4v`/`.mov`, whose layout is probed once from a bounded read of the
+file head: fast-start and fragmented MP4 can tolerate mid-stream holes, while **moov-at-end
+MP4 is fatal on any segment loss** because the moov atom lives in the file tail — holes
+overlapping the moov atom region at the start of a fast-start MP4 are also fatal. Offset-
+sensitive formats (`.avi`, …) and non-payload files are never classified; they keep the
+legacy abort-on-first-miss behavior. A missing first segment is always fatal.
+
+Degraded verdicts compose with the rest of the repair pipeline:
+
+- **PAR2 first.** When PAR2 gap repair (`repair.par2-enabled`) is enabled and preferred,
+  reconstruction is attempted with the full hole list before any verdict; success records a
+  healthy, PAR2-repaired result and clears any recorded holes.
+- **Rechecks can escalate or recover.** Degraded files stay on the normal age-doubling
+  recheck schedule. If damage grows past a cap, the next check fails the file and repair
+  proceeds; if the missing articles reappear (provider-side restoration), the record clears
+  itself and the file returns to healthy.
+- **Streaming failures still count.** A degraded verdict does not reset the consecutive
+  streaming-failure counter, so genuinely unplayable files still escalate toward
+  `repair.auto-remove-after-failures`.
+
+Degraded files appear on the [Health page](../operations/health-repairs.md) with a warning
+badge, a dedicated history filter, and an overview stat card.
 
 ## Replacement-loop protection [since 0.9.4](https://github.com/infinidysk/infinidysk/releases/tag/v0.9.4){ .nzbdav-since }
 

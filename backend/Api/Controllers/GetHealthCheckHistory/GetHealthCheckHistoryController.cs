@@ -21,6 +21,8 @@ public class GetHealthCheckHistoryController(DavDatabaseClient dbClient) : BaseA
             .AsNoTracking();
         if (request.RepairStatuses is not null)
             itemsQuery = itemsQuery.Where(x => request.RepairStatuses.Contains(x.RepairStatus));
+        if (request.Results is not null)
+            itemsQuery = itemsQuery.Where(x => request.Results.Contains(x.Result));
 
         var totalCount = await itemsQuery.CountAsync(request.CancellationToken).ConfigureAwait(false);
         var items = await itemsQuery

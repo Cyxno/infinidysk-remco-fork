@@ -19,6 +19,13 @@ public static partial class FilenameUtil
         ".img", ".iso", ".vob", ".mkv", ".mk3d", ".ts", ".wtv", ".m2ts"
     ];
 
+    // Containers where a small, bounded payload hole is skippable by tolerant decoders.
+    // Deliberately excludes offset-sensitive formats, non-payload files, and archives.
+    internal static readonly HashSet<string> DegradedToleranceExtensions =
+    [
+        ".mkv", ".mk3d", ".webm", ".ts", ".m2ts", ".mp4", ".m4v", ".mov"
+    ];
+
     private static readonly HashSet<string> AudioExtensions =
     [
         ".mp3", ".flac", ".aac", ".ogg", ".opus", ".wav", ".wma", ".m4a", ".alac", ".ape", ".wv",
@@ -50,6 +57,11 @@ public static partial class FilenameUtil
     public static bool IsVideoFile(string filename)
     {
         return VideoExtensions.Contains(Path.GetExtension(filename).ToLowerInvariant());
+    }
+
+    public static bool IsDegradedToleranceEligible(string filename)
+    {
+        return DegradedToleranceExtensions.Contains(Path.GetExtension(filename).ToLowerInvariant());
     }
 
     public static bool IsAudioFile(string filename)

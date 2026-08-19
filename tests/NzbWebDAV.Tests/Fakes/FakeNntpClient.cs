@@ -15,10 +15,18 @@ internal sealed class FakeNntpClient(
     IReadOnlyDictionary<string, LongRange>? segmentRanges = null,
     Func<string, byte[], Stream>? decodedStreamFactory = null) : NntpClient
 {
+    // Copied at construction so tests can add/restore articles via Serve() without
+    // mutating the caller's dictionary.
+    private readonly Dictionary<string, byte[]> _segments = new(segments, StringComparer.Ordinal);
+
     public int BatchRequestCount { get; private set; }
     public int BodyRequestCount { get; private set; }
     public Dictionary<string, int> BodyRequestCounts { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, int> StatRequestCounts { get; } = new(StringComparer.Ordinal);
     public HashSet<string> RequestedSegmentIds { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>Adds or restores an article (e.g. provider-side recovery between checks).</summary>
+    public void Serve(string segmentId, byte[] content) => _segments[segmentId] = content;
 
     public override Task ConnectAsync(
         string host, int port, bool useSsl, CancellationToken cancellationToken) =>
@@ -33,7 +41,8 @@ internal sealed class FakeNntpClient(
     {
         cancellationToken.ThrowIfCancellationRequested();
         var key = segmentId.ToString();
-        var exists = segments.ContainsKey(key);
+        StatRequestCounts[key] = StatRequestCounts.GetValueOrDefault(key) + 1;
+        var exists = _segments.ContainsKey(key);
         return Task.FromResult(new UsenetStatResponse
         {
             ResponseCode = exists
@@ -138,7 +147,7 @@ internal sealed class FakeNntpClient(
     private UsenetDecodedBodyResponse CreateBodyResponse(SegmentId segmentId)
     {
         var key = segmentId.ToString();
-        if (!segments.TryGetValue(key, out var bytes))
+        if (!_segments.TryGetValue(key, out var bytes))
             throw new UsenetArticleNotFoundException(key, "430 No such article");
 
         YencStream stream = useCachedYencStreams
@@ -151,7 +160,7 @@ internal sealed class FakeNntpClient(
                         : bytes.Length,
                     LineLength = 128,
                     PartNumber = 1,
-                    TotalParts = segments.Count,
+                    TotalParts = _segments.Count,
                     PartOffset = segmentRanges?[key].StartInclusive ?? 0,
                     PartSize = segmentRanges?[key].Count ?? bytes.Length,
                 },

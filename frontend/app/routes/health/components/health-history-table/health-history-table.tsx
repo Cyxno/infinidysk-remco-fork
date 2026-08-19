@@ -3,7 +3,7 @@ import { Badge, Icon } from "~/components/ui";
 import { Pagination } from "~/routes/queue/components/pagination/pagination";
 import { Truncate } from "~/routes/queue/components/truncate/truncate";
 
-export type HealthHistoryFilter = "all" | "deleted" | "repaired";
+export type HealthHistoryFilter = "all" | "deleted" | "repaired" | "degraded";
 
 export type HealthHistoryTableProps = {
     items: HealthCheckResult[],
@@ -23,9 +23,10 @@ const desktopHeaderClass =
     "hidden min-[900px]:table-cell px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide";
 const desktopCellClass =
     "hidden min-[900px]:table-cell max-w-[240px] px-3 py-3 align-top text-xs text-base-content/70";
-// Numeric value mirrors the backend RepairAction enum declared in
+// Numeric values mirror the backend HealthResult / RepairAction enums declared in
 // ~/clients/backend-client.server (a .server module, so its enums cannot be value-imported here).
 const RepairActionDeleted: HealthCheckResult["repairStatus"] = 2;
+const HealthResultDegraded: HealthCheckResult["result"] = 2;
 
 export function HealthHistoryTable({
     items,
@@ -73,6 +74,9 @@ export function HealthHistoryTable({
                         </FilterButton>
                         <FilterButton active={filter === "repaired"} onClick={() => onFilterSelected("repaired")}>
                             Repaired
+                        </FilterButton>
+                        <FilterButton active={filter === "degraded"} onClick={() => onFilterSelected("degraded")}>
+                            Degraded
                         </FilterButton>
                     </div>
                     {totalCount > 0 && (
@@ -183,6 +187,9 @@ function HistoryRow({ item }: { item: HealthCheckResult }) {
 }
 
 function StatusBadge({ item }: { item: HealthCheckResult }) {
+    if (item.result === HealthResultDegraded) {
+        return <Badge className="badge-sm badge-warning">Degraded</Badge>;
+    }
     const deleted = item.repairStatus === RepairActionDeleted;
     return (
         <Badge className={`badge-sm ${deleted ? "badge-error" : "badge-info"}`}>

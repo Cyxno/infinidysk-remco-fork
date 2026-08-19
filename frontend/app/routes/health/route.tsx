@@ -34,7 +34,7 @@ function parsePageSize(value: string | null): number {
 }
 
 function parseHistoryFilter(value: string | null): HealthHistoryFilter {
-    return value === "deleted" || value === "repaired" ? value : "all";
+    return value === "deleted" || value === "repaired" || value === "degraded" ? value : "all";
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -43,13 +43,19 @@ export async function loader({ request }: Route.LoaderArgs) {
     const historyPage = parsePage(url.searchParams.get("page"));
     const historyPageSize = parsePageSize(url.searchParams.get("pageSize"));
     const historyFilter = parseHistoryFilter(url.searchParams.get("status"));
-    const repairStatus = historyFilter === "all" ? "deleted,repaired" : historyFilter;
+    // Degraded is a HealthResult, not a RepairAction, so it filters on `result`
+    // instead of `repairStatus`.
+    const repairStatus = historyFilter === "all" ? "deleted,repaired"
+        : historyFilter === "degraded" ? undefined
+        : historyFilter;
+    const result = historyFilter === "degraded" ? "degraded" : undefined;
     const [queueData, historyData, config] = await Promise.all([
         backendClient.getHealthCheckQueue(30),
         backendClient.getHealthCheckHistory({
             page: historyPage,
             pageSize: historyPageSize,
-            repairStatus,
+            ...(repairStatus !== undefined ? { repairStatus } : {}),
+            ...(result !== undefined ? { result } : {}),
         }),
         backendClient.getConfig([enabledKey])
     ]);

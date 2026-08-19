@@ -8,8 +8,10 @@ export type HealthStatsProps = {
 // Numeric values mirror the backend HealthResult / RepairAction enums declared in
 // ~/clients/backend-client.server (a .server module, so its enums cannot be value-imported here).
 const HealthResultHealthy: HealthResult = 0;
+const HealthResultDegraded: HealthResult = 2;
 const RepairActionRepaired: RepairAction = 1;
 const RepairActionDeleted: RepairAction = 2;
+const RepairActionRepairedViaPar2: RepairAction = 4;
 
 export function HealthStats({ stats }: HealthStatsProps) {
     const totalChecked = stats
@@ -18,10 +20,14 @@ export function HealthStats({ stats }: HealthStatsProps) {
         .filter(stat => stat.result === HealthResultHealthy)
         .reduce((sum, stat) => sum + stat.count, 0);
     const repaired = stats
-        .filter(stat => stat.repairStatus === RepairActionRepaired)
+        .filter(stat => stat.repairStatus === RepairActionRepaired
+            || stat.repairStatus === RepairActionRepairedViaPar2)
         .reduce((sum, stat) => sum + stat.count, 0);
     const deleted = stats
         .filter(stat => stat.repairStatus === RepairActionDeleted)
+        .reduce((sum, stat) => sum + stat.count, 0);
+    const degraded = stats
+        .filter(stat => stat.result === HealthResultDegraded)
         .reduce((sum, stat) => sum + stat.count, 0);
 
     const getPercentage = (count: number) => {
@@ -66,6 +72,14 @@ export function HealthStats({ stats }: HealthStatsProps) {
                         title={`Deleted (${getPercentage(deleted)}%)`}
                         value={deleted}
                         valueClassName="text-error"
+                    />
+                    <Stat
+                        icon="warning"
+                        iconClassName="text-warning"
+                        iconFilled
+                        title={`Degraded (${getPercentage(degraded)}%)`}
+                        value={degraded}
+                        valueClassName="text-warning"
                     />
                 </div>
             </div>

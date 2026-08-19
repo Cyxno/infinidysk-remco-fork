@@ -1,7 +1,7 @@
 import { ManagedSetting, SettingsCard, SettingsIntro, SettingsPage, Tooltip } from "~/components/ui";
 import { Input, Select, Toggle } from "~/components/ui/form";
 import { type Dispatch, type SetStateAction } from "react";
-import { isPositiveInteger } from "../validation";
+import { isPositiveInteger, isPositiveNumber } from "../validation";
 
 type RepairsSettingsProps = {
     config: Record<string, string>
@@ -300,6 +300,82 @@ export function RepairsSettings({ config, setNewConfig }: RepairsSettingsProps) 
             </div>
             </ManagedSetting>
             </SettingsCard>
+
+            <SettingsCard
+                icon="heart_broken"
+                title="Degraded damage tolerance"
+                description="Keep slightly damaged video files playable instead of replacing the whole release."
+                contentClassName="grid grid-cols-1 gap-4 lg:grid-cols-2"
+            >
+            {!isRepairEnabled && (
+                <p className="text-[11px] leading-relaxed text-base-content/45 lg:col-span-2">
+                    Enable Background Repairs above to activate degraded damage tolerance.
+                </p>
+            )}
+            <ManagedSetting configKey="repair.degraded-tolerance-enabled">
+            <Tooltip content="Full-coverage health checks classify missing video segments: files with a small amount of damage in a resync-tolerant container (MKV/WebM/TS, fast-start or fragmented MP4) stay mounted and play through the gaps instead of being removed and replaced through Radarr/Sonarr. Enabled by default.">
+                <Toggle
+                    id="degraded-tolerance-enabled-checkbox"
+                    className="cursor-pointer gap-2 p-0"
+                    checked={isRepairEnabled && (config["repair.degraded-tolerance-enabled"] ?? "true") === "true"}
+                    disabled={!isRepairEnabled}
+                    onChange={e => setNewConfig({ ...config, "repair.degraded-tolerance-enabled": "" + e.target.checked })}
+                    label={<span className="text-sm text-base-content">Enable degraded damage tolerance</span>}
+                />
+            </Tooltip>
+            </ManagedSetting>
+            <ManagedSetting
+                configKeys={[
+                    "repair.degraded-max-consecutive-missing",
+                    "repair.degraded-max-total-missing",
+                    "repair.degraded-max-missing-byte-percent",
+                ]}
+                className="grid grid-cols-1 gap-4 lg:col-span-2 lg:grid-cols-3"
+            >
+            <div className="space-y-2">
+                <label className="block text-sm font-medium text-base-content" htmlFor="degraded-max-consecutive-missing-input">Max consecutive missing segments</label>
+                <Input
+                    className={`w-full ${!isPositiveInteger(config["repair.degraded-max-consecutive-missing"] ?? "2") ? "input-error" : ""}`}
+                    type="text"
+                    id="degraded-max-consecutive-missing-input"
+                    placeholder="2"
+                    disabled={!isRepairEnabled || (config["repair.degraded-tolerance-enabled"] ?? "true") !== "true"}
+                    value={config["repair.degraded-max-consecutive-missing"] ?? ""}
+                    onChange={e => setNewConfig({ ...config, "repair.degraded-max-consecutive-missing": e.target.value })} />
+                <p className="text-[11px] leading-relaxed text-base-content/45">
+                    A run of adjacent missing segments longer than this fails the file. Capped by the playback gap-fill limit (2).
+                </p>
+            </div>
+            <div className="space-y-2">
+                <label className="block text-sm font-medium text-base-content" htmlFor="degraded-max-total-missing-input">Max total missing segments</label>
+                <Input
+                    className={`w-full ${!isPositiveInteger(config["repair.degraded-max-total-missing"] ?? "5") ? "input-error" : ""}`}
+                    type="text"
+                    id="degraded-max-total-missing-input"
+                    placeholder="5"
+                    disabled={!isRepairEnabled || (config["repair.degraded-tolerance-enabled"] ?? "true") !== "true"}
+                    value={config["repair.degraded-max-total-missing"] ?? ""}
+                    onChange={e => setNewConfig({ ...config, "repair.degraded-max-total-missing": e.target.value })} />
+                <p className="text-[11px] leading-relaxed text-base-content/45">
+                    More confirmed holes than this fails the file (1–1000).
+                </p>
+            </div>
+            <div className="space-y-2">
+                <label className="block text-sm font-medium text-base-content" htmlFor="degraded-max-missing-byte-percent-input">Max missing data (% of file)</label>
+                <Input
+                    className={`w-full ${!isPositiveNumber(config["repair.degraded-max-missing-byte-percent"] ?? "1.0") ? "input-error" : ""}`}
+                    type="text"
+                    id="degraded-max-missing-byte-percent-input"
+                    placeholder="1.0"
+                    disabled={!isRepairEnabled || (config["repair.degraded-tolerance-enabled"] ?? "true") !== "true"}
+                    value={config["repair.degraded-max-missing-byte-percent"] ?? ""}
+                    onChange={e => setNewConfig({ ...config, "repair.degraded-max-missing-byte-percent": e.target.value })} />
+                <p className="text-[11px] leading-relaxed text-base-content/45">
+                    Holes totaling more than this share of the file's bytes fail the file (0.01–50).
+                </p>
+            </div>
+            </ManagedSetting>
+            </SettingsCard>
             </div>
         </SettingsPage>
     );
@@ -320,12 +396,17 @@ export function isRepairsSettingsUpdated(config: Record<string, string>, newConf
         || config["repair.par2-max-patch-gb"] !== newConfig["repair.par2-max-patch-gb"]
         || config["repair.par2-fetch-concurrency"] !== newConfig["repair.par2-fetch-concurrency"]
         || config["repair.par2-failure-cooldown-hours"] !== newConfig["repair.par2-failure-cooldown-hours"]
+        || config["repair.degraded-tolerance-enabled"] !== newConfig["repair.degraded-tolerance-enabled"]
+        || config["repair.degraded-max-consecutive-missing"] !== newConfig["repair.degraded-max-consecutive-missing"]
+        || config["repair.degraded-max-total-missing"] !== newConfig["repair.degraded-max-total-missing"]
+        || config["repair.degraded-max-missing-byte-percent"] !== newConfig["repair.degraded-max-missing-byte-percent"]
         || config["media.library-dir"] !== newConfig["media.library-dir"];
 }
 
 export function isRepairsSettingsValid(newConfig: Record<string, string>) {
     const concurrency = newConfig["repair.healthcheck-concurrency"];
     const autoRemove = newConfig["repair.auto-remove-after-failures"];
+    const bytePercent = newConfig["repair.degraded-max-missing-byte-percent"];
     const par2NumericKeys = [
         "repair.par2-max-missing-slices",
         "repair.par2-max-release-gb",
@@ -334,11 +415,20 @@ export function isRepairsSettingsValid(newConfig: Record<string, string>) {
         "repair.par2-fetch-concurrency",
         "repair.par2-failure-cooldown-hours",
     ] as const;
+    const degradedIntegerKeys = [
+        "repair.degraded-max-consecutive-missing",
+        "repair.degraded-max-total-missing",
+    ] as const;
     const concurrencyOk = concurrency === undefined || concurrency === "" || isPositiveInteger(concurrency);
     const autoRemoveOk = autoRemove === undefined || autoRemove === "" || isNonNegativeInteger(autoRemove);
+    const bytePercentOk = bytePercent === undefined || bytePercent === "" || isPositiveNumber(bytePercent);
     const par2Ok = par2NumericKeys.every(key => {
         const value = newConfig[key];
         return value === undefined || value === "" || isPositiveInteger(value);
     });
-    return concurrencyOk && autoRemoveOk && par2Ok;
+    const degradedOk = degradedIntegerKeys.every(key => {
+        const value = newConfig[key];
+        return value === undefined || value === "" || isPositiveInteger(value);
+    });
+    return concurrencyOk && autoRemoveOk && bytePercentOk && par2Ok && degradedOk;
 }

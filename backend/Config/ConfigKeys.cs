@@ -96,6 +96,10 @@ public static class ConfigKeys
     public const string RepairPar2MaxPatchGb = "repair.par2-max-patch-gb";
     public const string RepairPar2FetchConcurrency = "repair.par2-fetch-concurrency";
     public const string RepairPar2FailureCooldownHours = "repair.par2-failure-cooldown-hours";
+    public const string RepairDegradedToleranceEnabled = "repair.degraded-tolerance-enabled";
+    public const string RepairDegradedMaxConsecutiveMissing = "repair.degraded-max-consecutive-missing";
+    public const string RepairDegradedMaxTotalMissing = "repair.degraded-max-total-missing";
+    public const string RepairDegradedMaxMissingBytePercent = "repair.degraded-max-missing-byte-percent";
     public const string ArrInstances = "arr.instances";
 
     // rclone

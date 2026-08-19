@@ -22,7 +22,7 @@ using UsenetSharp.Models;
 
 namespace NzbWebDAV.Services.Repair;
 
-public sealed class Par2RepairService : BackgroundService
+public class Par2RepairService : BackgroundService
 {
     private const int MaxQueueLength = 50;
     private const int MaxAttempts = 3;
@@ -111,8 +111,9 @@ public sealed class Par2RepairService : BackgroundService
     /// <summary>
     /// Attempts PAR2 repair synchronously for health-check and urgent paths.
     /// Returns true when reconstruction succeeded and patches were committed.
+    /// Virtual so health-check classification tests can script the outcome.
     /// </summary>
-    public Task<bool> TryPar2RepairAsync(
+    public virtual Task<bool> TryPar2RepairAsync(
         DavItem davItem,
         IReadOnlyList<string>? missingSegmentIds,
         CancellationToken ct)

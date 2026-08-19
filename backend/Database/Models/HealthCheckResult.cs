@@ -16,6 +16,12 @@ public class HealthCheckResult
     {
         Healthy = 0,
         Unhealthy = 1,
+
+        /// <summary>
+        /// Confirmed segment holes within the degraded-damage tolerance caps in a
+        /// resync-tolerant container. Playback zero-fills the gaps; repair is skipped.
+        /// </summary>
+        Degraded = 2,
     }
 
     public enum RepairAction

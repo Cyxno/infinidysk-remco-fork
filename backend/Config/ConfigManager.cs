@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+﻿using System.Globalization;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
@@ -6,6 +7,7 @@ using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Models;
+using NzbWebDAV.Streams;
 using NzbWebDAV.Utils;
 using Serilog;
 
@@ -1019,6 +1021,36 @@ public class ConfigManager
         if (repairValue == null || !bool.Parse(repairValue)) return false;
         var par2Value = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.RepairPar2Enabled));
         return par2Value == null || bool.Parse(par2Value);
+    }
+
+    public bool IsDegradedToleranceEnabled()
+    {
+        var repairValue = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.RepairEnable));
+        if (repairValue == null || !bool.Parse(repairValue)) return false;
+        var toleranceValue = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.RepairDegradedToleranceEnabled));
+        return toleranceValue == null || bool.Parse(toleranceValue);
+    }
+
+    public int GetDegradedMaxConsecutiveMissing()
+    {
+        var value = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.RepairDegradedMaxConsecutiveMissing));
+        return int.TryParse(value, out var number)
+            ? Math.Clamp(number, 1, GapFillLimits.MaxConsecutiveZeroFills - 1)
+            : 2;
+    }
+
+    public int GetDegradedMaxTotalMissing()
+    {
+        var value = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.RepairDegradedMaxTotalMissing));
+        return int.TryParse(value, out var number) ? Math.Clamp(number, 1, 1000) : 5;
+    }
+
+    public double GetDegradedMaxMissingBytePercent()
+    {
+        var value = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.RepairDegradedMaxMissingBytePercent));
+        return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var number)
+            ? Math.Clamp(number, 0.01, 50)
+            : 1;
     }
 
     public bool IsPar2PreferredOverArr()

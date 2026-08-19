@@ -16,6 +16,10 @@ const baseConfig: Record<string, string> = {
     "repair.par2-max-patch-gb": "4",
     "repair.par2-fetch-concurrency": "2",
     "repair.par2-failure-cooldown-hours": "6",
+    "repair.degraded-tolerance-enabled": "true",
+    "repair.degraded-max-consecutive-missing": "2",
+    "repair.degraded-max-total-missing": "5",
+    "repair.degraded-max-missing-byte-percent": "1.0",
     "media.library-dir": "/library",
     "arr.instances": JSON.stringify({ RadarrInstances: [{}], SonarrInstances: [] }),
 };
@@ -34,6 +38,57 @@ describe("Repairs settings helpers", () => {
         expect(isRepairsSettingsValid({
             ...baseConfig,
             "repair.par2-max-missing-slices": "0",
+        })).toBe(false);
+    });
+
+    it("detects degraded tolerance setting changes", () => {
+        expect(isRepairsSettingsUpdated(baseConfig, {
+            ...baseConfig,
+            "repair.degraded-tolerance-enabled": "false",
+        })).toBe(true);
+        expect(isRepairsSettingsUpdated(baseConfig, {
+            ...baseConfig,
+            "repair.degraded-max-consecutive-missing": "1",
+        })).toBe(true);
+        expect(isRepairsSettingsUpdated(baseConfig, {
+            ...baseConfig,
+            "repair.degraded-max-total-missing": "10",
+        })).toBe(true);
+        expect(isRepairsSettingsUpdated(baseConfig, {
+            ...baseConfig,
+            "repair.degraded-max-missing-byte-percent": "2.5",
+        })).toBe(true);
+        expect(isRepairsSettingsUpdated(baseConfig, baseConfig)).toBe(false);
+    });
+
+    it("accepts valid degraded tolerance settings, including decimal percents", () => {
+        expect(isRepairsSettingsValid(baseConfig)).toBe(true);
+        expect(isRepairsSettingsValid({
+            ...baseConfig,
+            "repair.degraded-max-missing-byte-percent": "0.5",
+        })).toBe(true);
+        expect(isRepairsSettingsValid({
+            ...baseConfig,
+            "repair.degraded-max-missing-byte-percent": "2.5",
+        })).toBe(true);
+    });
+
+    it("rejects invalid degraded tolerance settings", () => {
+        expect(isRepairsSettingsValid({
+            ...baseConfig,
+            "repair.degraded-max-consecutive-missing": "0",
+        })).toBe(false);
+        expect(isRepairsSettingsValid({
+            ...baseConfig,
+            "repair.degraded-max-total-missing": "-3",
+        })).toBe(false);
+        expect(isRepairsSettingsValid({
+            ...baseConfig,
+            "repair.degraded-max-missing-byte-percent": "abc",
+        })).toBe(false);
+        expect(isRepairsSettingsValid({
+            ...baseConfig,
+            "repair.degraded-max-missing-byte-percent": "0",
         })).toBe(false);
     });
 });

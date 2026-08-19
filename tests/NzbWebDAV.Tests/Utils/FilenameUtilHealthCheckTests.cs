@@ -106,6 +106,43 @@ public class FilenameUtilHealthCheckTests
         Assert.False(FilenameUtil.IsAudioFile(filename));
     }
 
+    [Theory]
+    [InlineData("movie.mkv")]
+    [InlineData("movie.mk3d")]
+    [InlineData("movie.webm")]
+    [InlineData("movie.ts")]
+    [InlineData("movie.m2ts")]
+    [InlineData("movie.mp4")]
+    [InlineData("movie.m4v")]
+    [InlineData("movie.mov")]
+    [InlineData("MOVIE.MKV")]
+    [InlineData("Movie.MP4")]
+    public void IsDegradedToleranceEligible_ReturnsTrue_ForTolerableVideoContainers(string filename)
+    {
+        Assert.True(FilenameUtil.IsDegradedToleranceEligible(filename));
+    }
+
+    [Theory]
+    // Offset-sensitive or non-payload formats are never classified (issue #461).
+    [InlineData("movie.avi")]
+    [InlineData("movie.mts")]
+    [InlineData("movie.strm")]
+    [InlineData("movie.iso")]
+    [InlineData("movie.img")]
+    [InlineData("movie.wmv")]
+    [InlineData("movie.mpg")]
+    [InlineData("track.mp3")]
+    [InlineData("track.flac")]
+    [InlineData("archive.rar")]
+    [InlineData("archive.7z")]
+    [InlineData("release.nzb")]
+    [InlineData("info.nfo")]
+    [InlineData("no-extension")]
+    public void IsDegradedToleranceEligible_ReturnsFalse_ForOtherFiles(string filename)
+    {
+        Assert.False(FilenameUtil.IsDegradedToleranceEligible(filename));
+    }
+
     [Fact]
     public void NonHealthCheckExtensions_IsDisjointFromVideoAndAudio()
     {

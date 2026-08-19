@@ -10,12 +10,14 @@ using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
+using NzbWebDAV.Models;
 using NzbWebDAV.Queue;
 using NzbWebDAV.Queue.PostProcessors;
 using NzbWebDAV.Services.Repair;
 using NzbWebDAV.Utils;
 using NzbWebDAV.Websocket;
 using Serilog;
+using UsenetSharp.Models;
 
 namespace NzbWebDAV.Services;
 
@@ -281,7 +283,8 @@ public class HealthCheckService : BackgroundService
         }
     }
 
-    private async Task PerformHealthCheck
+    // internal for tests: the degraded-classification scenarios drive this directly.
+    internal async Task PerformHealthCheck
     (
         DavItem davItem,
         DavDatabaseClient dbClient,
@@ -329,6 +332,20 @@ public class HealthCheckService : BackgroundService
                 ? FilterSegmentsForStat(sampled, segments, nzbFile, _repairPatchStore)
                 : sampled;
 
+            // A damaged-but-tolerable video file can only be told apart from a failed one by a
+            // full-coverage sweep of an eligible container with recorded segment sizes (#461).
+            // PAR2-patched segments are stripped from the STAT list by FilterSegmentsForStat but
+            // still count toward coverage: they are served locally and can never be holes, so the
+            // full-coverage test uses the sampled count, not the STAT count.
+            var segmentRanges = nzbFile?.SegmentByteRanges;
+            // SegmentByteRanges is [NotMapped] and never materializes for legacy EF-fallback items, so a non-null value already implies FileBlobId != null.
+            var canClassify = _configManager.IsDegradedToleranceEnabled()
+                              && davItem.SubType == DavItem.ItemSubType.NzbFile
+                              && FilenameUtil.IsDegradedToleranceEligible(davItem.Name)
+                              && segmentRanges is not null
+                              && segmentRanges.Length == totalSegments
+                              && sampled.Count == totalSegments;
+
             // setup progress tracking
             var progressHook = new Progress<int>();
             var debounce = DebounceUtil.CreateDebounce(TimeSpan.FromMilliseconds(200));
@@ -346,14 +363,39 @@ public class HealthCheckService : BackgroundService
             // Only cancel a STAT sweep after it has made no progress for a sustained
             // period. A complete/deep scan can otherwise run as long as it continues
             // advancing; cancellation reaches and drains every in-flight STAT request.
+            List<int>? confirmedHoles = null;
             using (statCts = ContextualCancellationTokenSource.CreateLinkedTokenSource(ct))
             {
                 statCts.CancelAfter(HealthCheckProgressTimeout);
                 var progress = progressHook.ToPercentage(statSegments.Count);
-                await ArticleExistenceChecker.CheckAsync(
-                    _usenetClient, statSegments, concurrency, progress, statCts.Token).ConfigureAwait(false);
+                if (!canClassify)
+                {
+                    await ArticleExistenceChecker.CheckAsync(
+                        _usenetClient, statSegments, concurrency, progress, statCts.Token).ConfigureAwait(false);
+                }
+                else
+                {
+                    // Sweep-and-collect every confirmed miss so the damage classifier can weigh
+                    // the full hole set instead of aborting on the first one. STAT sweep chunk
+                    // sizing is fixed in BaseNntpClient; the depth argument is BODY-oriented
+                    // interface baggage and unused here.
+                    var missingIds = await _usenetClient.CollectMissingSegmentsPipelinedAsync(
+                            statSegments, depth: 0, concurrency, progress, statCts.Token)
+                        .ConfigureAwait(false);
+                    confirmedHoles = await ConfirmHolesThroughFallbacksAsync(
+                            missingIds, segments, nzbFile!, concurrency, statCts)
+                        .ConfigureAwait(false);
+                }
             }
             CompleteHealthProgress(davItem.Id);
+
+            if (confirmedHoles is { Count: > 0 })
+            {
+                await HandleConfirmedHolesAsync(
+                        davItem, dbClient, nzbFile!, segments, segmentRanges!, confirmedHoles, ct)
+                    .ConfigureAwait(false);
+                return;
+            }
 
             // update the database.
             // the next check is scheduled so the interval doubles with the item's age since release.
@@ -364,6 +406,13 @@ public class HealthCheckService : BackgroundService
             davItem.NextHealthCheck = ComputeNextHealthCheck(davItem.ReleaseDate, utcNow);
             _failureTracker.ClearFailure(davItem.Id);
             _arrNoMatchConfirmations.TryRemove(davItem.Id, out _);
+
+            // A previously degraded file that now sweeps clean has recovered (provider-side
+            // restoration): drop the stale hole record. The probed container class is a
+            // permanent property of the file and survives the clear.
+            if (canClassify && nzbFile!.MissingSegmentIndices != null)
+                await SwapNzbFileBlobAsync(davItem, nzbFile, null, null).ConfigureAwait(false);
+
             var repairedCount = nzbFile != null
                 ? Par2RepairService.CountRepairedSegments(nzbFile, _repairPatchStore)
                 : 0;
@@ -488,6 +537,242 @@ public class HealthCheckService : BackgroundService
         {
             await DeferHealthCheck(davItem, dbClient, e, ct).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Verdict handling for a full-coverage sweep that found confirmed holes on an
+    /// eligible video file (#461): PAR2 reconstruction first, then container-aware
+    /// classification. Degraded files persist their holes and stay on the recheck
+    /// schedule instead of triggering Arr repair; Failed files take the same repair
+    /// path as the legacy first-miss flow.
+    /// </summary>
+    private async Task HandleConfirmedHolesAsync(
+        DavItem davItem,
+        DavDatabaseClient dbClient,
+        DavNzbFile nzbFile,
+        List<string> segments,
+        LongRange[] segmentRanges,
+        List<int> holeIndices,
+        CancellationToken ct)
+    {
+        var holeSegmentIds = holeIndices.Select(index => segments[index]).ToArray();
+
+        // PAR2 first, with the full hole list: reconstruct from parity before any verdict.
+        if (_configManager.IsPar2RepairEnabled() && _configManager.IsPar2PreferredOverArr()
+            && await _par2RepairService.TryPar2RepairAsync(davItem, holeSegmentIds, ct).ConfigureAwait(false))
+        {
+            var utcNow = DateTimeOffset.UtcNow;
+            davItem.LastHealthCheck = utcNow;
+            davItem.NextHealthCheck = ComputeNextHealthCheck(davItem.ReleaseDate, utcNow);
+            _failureTracker.ClearFailure(davItem.Id);
+            _arrNoMatchConfirmations.TryRemove(davItem.Id, out _);
+            // The patched segments are served locally now; any earlier hole record is obsolete.
+            if (nzbFile.MissingSegmentIndices != null)
+                await SwapNzbFileBlobAsync(davItem, nzbFile, null, null).ConfigureAwait(false);
+            await RecordHealthResult(
+                dbClient, davItem,
+                HealthCheckResult.HealthResult.Healthy,
+                HealthCheckResult.RepairAction.RepairedViaPar2,
+                "Missing segment(s) repaired from PAR2 parity.", ct).ConfigureAwait(false);
+            return;
+        }
+
+        var (containerClass, probedClass, criticalHeadEndExclusive) = await ResolveContainerClassAsync(
+                davItem, nzbFile, segments, holeIndices, ct)
+            .ConfigureAwait(false);
+        var caps = new SegmentDamageCaps(
+            _configManager.GetDegradedMaxConsecutiveMissing(),
+            _configManager.GetDegradedMaxTotalMissing(),
+            _configManager.GetDegradedMaxMissingBytePercent());
+        var exactSegmentSizes = segmentRanges.Select(range => range.Count).ToArray();
+        var segmentStarts = segmentRanges.Select(range => range.StartInclusive).ToArray();
+        var verdict = SegmentDamageClassifier.Classify(
+            holeIndices, segments.Count, exactSegmentSizes, segmentStarts,
+            containerClass, caps, criticalHeadEndExclusive, out var reason);
+        long? probedExtent = probedClass != null ? criticalHeadEndExclusive : null;
+
+        if (verdict == SegmentDamageVerdict.Failed)
+        {
+            Log.Information(
+                "Health check classified {Path} as failed: {Reason} Starting repair.",
+                davItem.Path, reason);
+            // Persist a fresh probe so a later check can reuse the class/extent without
+            // another BODY. Do not record holes: Failed is not a degraded keep-the-file
+            // verdict. Repair() commits the swapped FileBlobId with the health row.
+            if (probedClass != null)
+                await SwapNzbFileBlobAsync(
+                    davItem, nzbFile, nzbFile.MissingSegmentIndices, probedClass, probedExtent)
+                    .ConfigureAwait(false);
+            // Seed the queue precheck with every confirmed miss so a re-grab of this release
+            // fails fast pre-import (issue #732), then take today's repair path.
+            if (FilenameUtil.IsImportantFileType(davItem.Name))
+                AddMissingSegmentIds(holeSegmentIds);
+            await Repair(davItem, dbClient, ct).ConfigureAwait(false);
+            return;
+        }
+
+        // Degraded: keep the file and persist the confirmed holes — but only when the record
+        // actually changed, so an unchanged recheck does not churn blobs. Do not call Repair,
+        // do not seed the fail-fast reimport cache (a re-grab of a release we chose to keep
+        // must not fail), and do not clear the streaming-failure count: confirmed damage is
+        // not health, and real playback failures keep escalating toward auto-remove.
+        var recordChanged = nzbFile.MissingSegmentIndices is not { } existing
+                            || !existing.SequenceEqual(holeIndices)
+                            || (probedClass != null && nzbFile.ContainerClass != probedClass)
+                            || (probedExtent != null && nzbFile.CriticalHeadEndExclusive != probedExtent);
+        if (recordChanged)
+            await SwapNzbFileBlobAsync(
+                    davItem, nzbFile, holeIndices.ToArray(), probedClass, probedExtent)
+                .ConfigureAwait(false);
+
+        Log.Warning(
+            "Health check classified {Path} as degraded: {Reason} Playback fills the gaps; repair skipped.",
+            davItem.Path, reason);
+        var degradedUtcNow = DateTimeOffset.UtcNow;
+        davItem.LastHealthCheck = degradedUtcNow;
+        davItem.NextHealthCheck = ComputeNextHealthCheck(davItem.ReleaseDate, degradedUtcNow);
+        await RecordHealthResult(
+            dbClient, davItem,
+            HealthCheckResult.HealthResult.Degraded,
+            HealthCheckResult.RepairAction.None,
+            $"{reason} within tolerance for {MediaContainerClassMapping.Describe(containerClass)}. " +
+            "Playback fills the gaps; repair skipped.", ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Resolves the container class for the verdict: fixed by extension for the MKV/TS
+    /// family, reused once persisted, otherwise probed once from a bounded read of the
+    /// file head (MP4 family only). Probe failures propagate to the caller's catches —
+    /// no verdict is recorded this cycle and the probe is retried next time.
+    /// </summary>
+    private async Task<(MediaContainerClass ContainerClass, byte? ProbedClass, long CriticalHeadEndExclusive)>
+        ResolveContainerClassAsync(
+            DavItem davItem,
+            DavNzbFile nzbFile,
+            List<string> segments,
+            List<int> holeIndices,
+            CancellationToken ct)
+    {
+        if (MediaContainerClassMapping.ByExtension(davItem.Name) is { } byExtension)
+            return (byExtension, null, 0);
+
+        if (nzbFile.ContainerClass is byte persisted && Enum.IsDefined((MediaContainerClass)persisted))
+            return ((MediaContainerClass)persisted, null, nzbFile.CriticalHeadEndExclusive ?? 0);
+
+        // A hole at segment 0 fails classification regardless, and probing a missing
+        // segment would just throw; never probe when the head is a hole.
+        if (holeIndices[0] == 0)
+            return (MediaContainerClass.Unknown, null, 0);
+
+        // One bounded head read per file, ever: the probed class is persisted with the
+        // hole record. Runs inside the caller's maintenance download context (attribution)
+        // and cancellation scope; early disposal of the body stream is by design.
+        var response = await _usenetClient.DecodedBodyAsync(segments[0], ct).ConfigureAwait(false);
+        if (response.Stream is not { } headStream)
+            throw new UsenetUnexpectedResponseException(segments[0], response.ResponseMessage);
+        await using (headStream)
+        {
+            var buffer = new byte[64 * 1024];
+            var filled = 0;
+            while (filled < buffer.Length)
+            {
+                var read = await headStream.ReadAsync(buffer.AsMemory(filled), ct).ConfigureAwait(false);
+                if (read <= 0) break;
+                filled += read;
+            }
+
+            var (probed, extent) = Mp4LayoutProbe.ClassifyMp4Head(buffer.AsSpan(0, filled));
+            return (probed, (byte)probed, extent);
+        }
+    }
+
+    /// <summary>
+    /// Playback fetches fallback MessageIds before zero-filling
+    /// (MultiSegmentStream/UnbufferedMultiSegmentStream), so a primary-miss segment with
+    /// any live fallback is servable, not a hole. A segment is a hole only when the
+    /// primary and every fallback are definitively missing. Non-definitive responses
+    /// throw into the defer catches rather than guessing a verdict.
+    /// </summary>
+    private async Task<List<int>> ConfirmHolesThroughFallbacksAsync(
+        IReadOnlyList<string> primaryMissIds,
+        List<string> segments,
+        DavNzbFile nzbFile,
+        int concurrency,
+        ContextualCancellationTokenSource statCts)
+    {
+        if (primaryMissIds.Count == 0) return [];
+
+        var indexById = segments
+            .Select((id, index) => (id, index))
+            .ToDictionary(x => x.id, x => x.index, StringComparer.Ordinal);
+
+        var checks = primaryMissIds
+            .Select(missId => (Id: missId, Index: indexById.GetValueOrDefault(missId, -1)))
+            .Where(miss => miss.Index >= 0)
+            .Select(async miss => (
+                miss.Index,
+                IsHole: await IsConfirmedHoleAsync(miss.Index, nzbFile, statCts.Token).ConfigureAwait(false)))
+            .WithConcurrencyAsync(concurrency, statCts.Token);
+
+        var holes = new List<int>();
+        await foreach (var (index, isHole) in checks.ConfigureAwait(false))
+        {
+            // keep the no-progress watchdog armed while fallback STATs are in flight
+            statCts.CancelAfter(HealthCheckProgressTimeout);
+            if (isHole) holes.Add(index);
+        }
+
+        holes.Sort();
+        return holes;
+    }
+
+    private async Task<bool> IsConfirmedHoleAsync(int segmentIndex, DavNzbFile nzbFile, CancellationToken ct)
+    {
+        if (nzbFile.SegmentFallbackIds is not { } fallbackIds ||
+            segmentIndex >= fallbackIds.Length ||
+            fallbackIds[segmentIndex] is not { Length: > 0 } alternates)
+            return true;
+
+        foreach (var fallbackId in alternates)
+        {
+            var response = await _usenetClient.StatAsync(fallbackId, ct).ConfigureAwait(false);
+            if (response.ResponseType == UsenetResponseType.ArticleExists)
+                return false;
+            if (!UsenetArticleAvailability.IsDefinitiveMissing(response))
+                throw new UsenetUnexpectedResponseException(fallbackId, response.ResponseMessage);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Persists the degraded-damage record by writing a NEW blob and swapping
+    /// <see cref="DavItem.FileBlobId"/>, committed by the caller's SaveChangesAsync in
+    /// the same transaction as the health row. The TR_DavItems_Update_AddBlobCleanup
+    /// trigger queues the old blob for deferred cleanup and in-flight readers keep their
+    /// open handle. The instance handed in is the shared MetadataCache entry — never
+    /// mutate it; write a fresh copy.
+    /// </summary>
+    private static async Task SwapNzbFileBlobAsync(
+        DavItem davItem,
+        DavNzbFile nzbFile,
+        int[]? missingSegmentIndices,
+        byte? probedContainerClass,
+        long? probedCriticalHeadEndExclusive = null)
+    {
+        var updated = new DavNzbFile
+        {
+            Id = nzbFile.Id,
+            SegmentIds = nzbFile.SegmentIds,
+            SegmentByteRanges = nzbFile.SegmentByteRanges,
+            SegmentFallbackIds = nzbFile.SegmentFallbackIds,
+            MissingSegmentIndices = missingSegmentIndices,
+            ContainerClass = probedContainerClass ?? nzbFile.ContainerClass,
+            CriticalHeadEndExclusive = probedCriticalHeadEndExclusive ?? nzbFile.CriticalHeadEndExclusive,
+        };
+        var newBlobId = Guid.NewGuid();
+        await BlobStore.WriteBlob(newBlobId, updated).ConfigureAwait(false);
+        davItem.FileBlobId = newBlobId;
     }
 
     private void CompleteHealthProgress(Guid davItemId)

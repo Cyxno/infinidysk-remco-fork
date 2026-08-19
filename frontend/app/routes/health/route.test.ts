@@ -127,6 +127,36 @@ describe("health route loader", () => {
     });
   });
 
+  it("maps the degraded history filter to the result query parameter", async () => {
+    getHealthCheckQueueMock.mockResolvedValue({ uncheckedCount: 0, items: [] });
+    getHealthCheckHistoryMock.mockResolvedValue({ stats: [], items: [], totalCount: 0 });
+    getConfigMock.mockResolvedValue([]);
+
+    await expect(loader(loaderArgs("/health?status=degraded"))).resolves.toMatchObject({
+      historyFilter: "degraded",
+    });
+    expect(getHealthCheckHistoryMock).toHaveBeenCalledWith({
+      page: 1,
+      pageSize: 25,
+      result: "degraded",
+    });
+  });
+
+  it("falls back to the default filter for unknown status values", async () => {
+    getHealthCheckQueueMock.mockResolvedValue({ uncheckedCount: 0, items: [] });
+    getHealthCheckHistoryMock.mockResolvedValue({ stats: [], items: [], totalCount: 0 });
+    getConfigMock.mockResolvedValue([]);
+
+    await expect(loader(loaderArgs("/health?status=bogus"))).resolves.toMatchObject({
+      historyFilter: "all",
+    });
+    expect(getHealthCheckHistoryMock).toHaveBeenCalledWith({
+      page: 1,
+      pageSize: 25,
+      repairStatus: "deleted,repaired",
+    });
+  });
+
   it("surfaces backend failures instead of returning partial health data", async () => {
     getHealthCheckQueueMock.mockRejectedValueOnce(new Error("queue unavailable"));
     getHealthCheckHistoryMock.mockResolvedValueOnce({ stats: [], items: [], totalCount: 0 });
