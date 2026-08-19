@@ -245,6 +245,16 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
                 await SegmentResponseValidator
                     .ThrowOnSegmentIdMismatchAsync(fallbackId, body)
                     .ConfigureAwait(false);
+                if (!await SegmentResponseValidator.IsFallbackPartSizeCompatibleAsync(
+                        body.Stream!, _segmentSizes, segmentIndex, cancellationToken)
+                        .ConfigureAwait(false))
+                {
+                    Log.Debug(
+                        "Fallback MessageId {FallbackId} for segment {PrimaryIndex} of {FileName} has a mismatched yEnc part size; skipping.",
+                        fallbackId, segmentIndex, _fileName);
+                    await body.Stream!.DisposeAsync().ConfigureAwait(false);
+                    continue;
+                }
                 return body.Stream!;
             }
             catch (UsenetArticleNotFoundException)

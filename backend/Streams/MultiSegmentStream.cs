@@ -885,6 +885,16 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                         .DecodedBodyAsync(fallbackId, cancellationToken)
                         .ConfigureAwait(false);
                     await ThrowOnSegmentIdMismatchAsync(fallbackId, bodyResponse).ConfigureAwait(false);
+                    if (!await SegmentResponseValidator.IsFallbackPartSizeCompatibleAsync(
+                            bodyResponse.Stream!, _segmentSizes, segmentIndex, cancellationToken)
+                        .ConfigureAwait(false))
+                    {
+                        Log.Debug(
+                            "Fallback MessageId {FallbackId} for segment {PrimaryIndex} of {FileName} has a mismatched yEnc part size; skipping.",
+                            fallbackId, segmentIndex, _fileName);
+                        await bodyResponse.Stream!.DisposeAsync().ConfigureAwait(false);
+                        continue;
+                    }
                     Log.Debug(
                         "Segment {PrimaryIndex} recovered via fallback MessageId {FallbackId} while reading {FileName}.",
                         segmentIndex, fallbackId, _fileName);
