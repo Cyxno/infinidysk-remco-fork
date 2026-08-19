@@ -439,6 +439,58 @@ namespace NzbWebDAV.Database.Migrations
                     b.ToTable("ArticleMissCacheEntries", (string)null);
                 });
 
+            modelBuilder.Entity("NzbWebDAV.Database.Models.Par2RepairJob", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("BytesRead")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("CompletedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<Guid>("DavItemId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("FailureReason")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("MissingSegmentIds")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("NextAttemptAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Path")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("SlicesReconstructed")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("StartedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("State")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DavItemId");
+
+                    b.HasIndex("State", "NextAttemptAt");
+
+                    b.ToTable("Par2RepairJobs", (string)null);
+                });
+
             modelBuilder.Entity("NzbWebDAV.Database.Models.NzbResolutionGroup", b =>
                 {
                     b.Property<Guid>("Id")
