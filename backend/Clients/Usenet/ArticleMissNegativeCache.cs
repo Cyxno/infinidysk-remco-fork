@@ -1,5 +1,11 @@
 using System.Collections.Concurrent;
+using System.Threading.Channels;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting;
 using NzbWebDAV.Config;
+using NzbWebDAV.Database;
+using NzbWebDAV.Database.Models;
+using Serilog;
 
 namespace NzbWebDAV.Clients.Usenet;
 
@@ -25,20 +31,61 @@ namespace NzbWebDAV.Clients.Usenet;
 /// articles, auth/connect failures, protocol errors, or cancellation — only a
 /// definitive miss (<see cref="UsenetArticleAvailability.IsDefinitiveMissing"/>)
 /// belongs in this cache.
+///
+/// Persistence is queued on a bounded channel drained in FIFO order by a single
+/// background consumer (started in <see cref="StartAsync"/>), so provider-change
+/// clears cannot be reordered behind earlier marks. <see cref="StopAsync"/>
+/// completes the queue and waits for the drain, so graceful restarts lose neither
+/// recently confirmed misses nor a pending clear. Marks that arrive while the
+/// queue is full stay memory-only — safe, because the in-memory cache is
+/// authoritative for the running process.
 /// </summary>
-public sealed class ArticleMissNegativeCache
+public sealed class ArticleMissNegativeCache : IHostedService, IDisposable
 {
+    private const int PersistenceQueueCapacity = 4096;
+    private const int MaxPersistenceBatchSize = 256;
+
     private readonly ConfigManager _configManager;
+    private readonly Func<DavDatabaseContext>? _contextFactory;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _missingAt = new(StringComparer.Ordinal);
+    private readonly Channel<PersistenceWorkItem>? _persistenceQueue;
+    private Task _persistenceLoop = Task.CompletedTask;
+    private volatile bool _persistenceLoopStarted;
     private long _hits;
 
-    public ArticleMissNegativeCache(ConfigManager configManager)
+    private abstract record PersistenceWorkItem;
+
+    private sealed record MarkItem(string Key, long ConfirmedAtUnix) : PersistenceWorkItem;
+
+    private sealed record ClearItem : PersistenceWorkItem
+    {
+        public static readonly ClearItem Instance = new();
+    }
+
+    private sealed record BarrierItem(TaskCompletionSource Completion) : PersistenceWorkItem;
+
+    public ArticleMissNegativeCache(
+        ConfigManager configManager,
+        Func<DavDatabaseContext>? contextFactory = null)
     {
         _configManager = configManager;
+        _contextFactory = contextFactory;
+        if (contextFactory is not null)
+        {
+            _persistenceQueue = Channel.CreateBounded<PersistenceWorkItem>(
+                new BoundedChannelOptions(PersistenceQueueCapacity)
+                {
+                    SingleReader = true,
+                    SingleWriter = false,
+                    FullMode = BoundedChannelFullMode.DropWrite,
+                });
+        }
+
         configManager.OnConfigChanged += (_, args) =>
         {
             if (!args.ChangedConfig.ContainsKey(ConfigKeys.UsenetProviders)) return;
             Clear();
+            EnqueueClear();
         };
     }
 
@@ -78,15 +125,91 @@ public sealed class ArticleMissNegativeCache
 
     public void MarkMissing(string key)
     {
-        _missingAt[key] = DateTimeOffset.UtcNow;
-        var maxEntries = _configManager.GetArticleMissCacheMaxEntries();
-        if (_missingAt.Count > maxEntries) Cleanup(maxEntries);
+        var now = DateTimeOffset.UtcNow;
+        MarkMissingInMemory(key, now);
+        _persistenceQueue?.Writer.TryWrite(new MarkItem(key, now.ToUnixTimeMilliseconds()));
     }
 
     public void Clear() => _missingAt.Clear();
 
+    /// <summary>
+    /// Hydrates unexpired misses before NNTP traffic starts, then starts the
+    /// background persistence consumer. A DB failure leaves the in-memory cache
+    /// usable; definitive misses must never block streaming.
+    /// </summary>
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        if (_contextFactory is null) return;
+
+        try
+        {
+            var cutoff = DateTimeOffset.UtcNow - _configManager.GetArticleMissCacheTtl();
+            var cutoffUnix = cutoff.ToUnixTimeMilliseconds();
+            var maxEntries = _configManager.GetArticleMissCacheMaxEntries();
+            await using var context = _contextFactory();
+            var entries = await context.ArticleMissCacheEntries
+                .AsNoTracking()
+                .Where(x => x.ConfirmedAtUnix >= cutoffUnix)
+                .OrderByDescending(x => x.ConfirmedAtUnix)
+                .Take(maxEntries)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+            foreach (var entry in entries)
+                _missingAt[entry.CacheKey] = DateTimeOffset.FromUnixTimeMilliseconds(entry.ConfirmedAtUnix);
+
+            await TrimPersistedAsync(context, cutoffUnix, maxEntries, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception e) when (e is not OperationCanceledException and not OutOfMemoryException)
+        {
+            Log.Warning(e, "Unable to hydrate persistent article-miss cache; continuing with memory-only misses.");
+        }
+
+        // The loop outlives startup; it stops when StopAsync/Dispose completes the queue.
+        _persistenceLoop = Task.Run(RunPersistenceLoopAsync, CancellationToken.None);
+        _persistenceLoopStarted = true;
+    }
+
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        if (_persistenceQueue is null) return;
+        _persistenceQueue.Writer.TryComplete();
+        try
+        {
+            await _persistenceLoop.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            Log.Warning("Timed out draining the article-miss persistence queue; recent definitive misses may be lost.");
+        }
+    }
+
+    public void Dispose() => _persistenceQueue?.Writer.TryComplete();
+
     /// <summary>Test helper: mark an entry as if it were recorded at <paramref name="at"/>.</summary>
     internal void MarkMissingAtForTests(string key, DateTimeOffset at)
+    {
+        MarkMissingInMemory(key, at);
+    }
+
+    internal async Task MarkMissingAndPersistForTestsAsync(string key)
+    {
+        MarkMissing(key);
+        await FlushPersistenceForTestsAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Test helper: wait until every work item queued so far has been applied.</summary>
+    internal async Task FlushPersistenceForTestsAsync()
+    {
+        if (_persistenceQueue is null) return;
+        if (!_persistenceLoopStarted)
+            throw new InvalidOperationException("StartAsync must be called before flushing persistence.");
+        var barrier = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await _persistenceQueue.Writer.WriteAsync(new BarrierItem(barrier)).ConfigureAwait(false);
+        await barrier.Task.ConfigureAwait(false);
+    }
+
+    private void MarkMissingInMemory(string key, DateTimeOffset at)
     {
         _missingAt[key] = at;
         var maxEntries = _configManager.GetArticleMissCacheMaxEntries();
@@ -105,5 +228,121 @@ public sealed class ArticleMissNegativeCache
         // (approximate LRU) so runaway cardinality can't grow unbounded.
         foreach (var kv in _missingAt.OrderBy(kv => kv.Value).Take(overflow))
             _missingAt.TryRemove(kv.Key, out _);
+    }
+
+    private void EnqueueClear()
+    {
+        if (_persistenceQueue is null) return;
+        if (_persistenceQueue.Writer.TryWrite(ClearItem.Instance)) return;
+        // The queue is momentarily full of pending marks and drains quickly; wait
+        // for room so a provider-change clear is never dropped.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _persistenceQueue.Writer.WriteAsync(ClearItem.Instance).ConfigureAwait(false);
+            }
+            catch (ChannelClosedException)
+            {
+                // Shutdown raced the config change; nothing left to drain into.
+            }
+        });
+    }
+
+    private async Task RunPersistenceLoopAsync()
+    {
+        var reader = _persistenceQueue!.Reader;
+        while (await reader.WaitToReadAsync().ConfigureAwait(false))
+        {
+            var marks = new Dictionary<string, long>(StringComparer.Ordinal);
+            var clearPending = false;
+            TaskCompletionSource? barrier = null;
+            var itemsRead = 0;
+            while (itemsRead < MaxPersistenceBatchSize && reader.TryRead(out var item))
+            {
+                itemsRead++;
+                switch (item)
+                {
+                    case ClearItem:
+                        // Marks queued before the clear must not survive it.
+                        marks.Clear();
+                        clearPending = true;
+                        break;
+                    case MarkItem mark:
+                        marks[mark.Key] = mark.ConfirmedAtUnix;
+                        break;
+                    case BarrierItem b:
+                        barrier = b.Completion;
+                        break;
+                }
+                if (barrier is not null) break;
+            }
+
+            try
+            {
+                if (clearPending || marks.Count > 0)
+                    await ApplyBatchAsync(clearPending, marks).ConfigureAwait(false);
+                barrier?.TrySetResult();
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                Log.Debug(e, "Unable to persist definitive article misses; retaining memory-only entries.");
+                barrier?.TrySetException(e);
+            }
+        }
+    }
+
+    private async Task ApplyBatchAsync(bool clearPending, Dictionary<string, long> marks)
+    {
+        await using var context = _contextFactory!();
+        if (clearPending)
+            await context.ArticleMissCacheEntries.ExecuteDeleteAsync().ConfigureAwait(false);
+
+        if (marks.Count > 0)
+        {
+            var keys = marks.Keys.ToList();
+            var existing = await context.ArticleMissCacheEntries
+                .Where(x => keys.Contains(x.CacheKey))
+                .ToDictionaryAsync(x => x.CacheKey)
+                .ConfigureAwait(false);
+            foreach (var (key, confirmedAtUnix) in marks)
+            {
+                if (existing.TryGetValue(key, out var entry))
+                    entry.ConfirmedAtUnix = confirmedAtUnix;
+                else
+                    context.ArticleMissCacheEntries.Add(new ArticleMissCacheEntry
+                    {
+                        CacheKey = key,
+                        ConfirmedAtUnix = confirmedAtUnix,
+                    });
+            }
+            await context.SaveChangesAsync().ConfigureAwait(false);
+        }
+
+        var cutoffUnix = (DateTimeOffset.UtcNow - _configManager.GetArticleMissCacheTtl())
+            .ToUnixTimeMilliseconds();
+        await TrimPersistedAsync(
+            context, cutoffUnix, _configManager.GetArticleMissCacheMaxEntries(), CancellationToken.None)
+            .ConfigureAwait(false);
+    }
+
+    private static async Task TrimPersistedAsync(
+        DavDatabaseContext context,
+        long cutoffUnix,
+        int maxEntries,
+        CancellationToken cancellationToken)
+    {
+        // Single round-trip: drop expired rows and, when over capacity, everything
+        // outside the newest maxEntries rows. Expired rows inside the keep-set are
+        // still removed by the first condition.
+        var keepKeys = context.ArticleMissCacheEntries
+            .OrderByDescending(x => x.ConfirmedAtUnix)
+            .ThenByDescending(x => x.CacheKey)
+            .Take(maxEntries)
+            .Select(x => x.CacheKey);
+        await context.ArticleMissCacheEntries
+            .Where(x => x.ConfirmedAtUnix < cutoffUnix || !keepKeys.Contains(x.CacheKey))
+            .ExecuteDeleteAsync(cancellationToken)
+            .ConfigureAwait(false);
     }
 }
