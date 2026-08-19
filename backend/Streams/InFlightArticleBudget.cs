@@ -6,7 +6,9 @@ using Serilog;
 namespace NzbWebDAV.Streams;
 
 /// <summary>
-/// Process-wide cap on decoded article bytes retained in RAM (WebDAV segment drains).
+/// Process-wide cap on decoded article bytes retained in RAM, including pipe copies
+/// from all workloads (streaming, queue, health, benchmark, and seek). Streaming
+/// leases gate admission; queue/health/seek pipe bytes are accounted but not gated.
 /// Connection semaphores bound concurrency; this bounds retained bytes so concurrent
 /// streams cannot OOM the host.
 /// </summary>
@@ -16,6 +18,7 @@ public sealed class InFlightArticleBudget
     private long _capBytes;
     private long _throttleEvents;
     private long _lastWarningTicks;
+    private long _lastPipeOverReleaseWarningTicks;
     private readonly ProviderLatencyTracker? _latencyTracker;
     private readonly object _gate = new();
     private readonly LinkedList<Waiter> _waiters = new();
@@ -166,6 +169,47 @@ public sealed class InFlightArticleBudget
     }
 
     /// <summary>
+    /// Accounts decoded bytes buffered in UsenetSharp body pipes — the second resident
+    /// copy of each in-flight segment. Positive deltas never block or wake waiters;
+    /// negative deltas release and wake the FIFO head. Deltas sum to zero per body,
+    /// so the counter self-balances across success, cancellation, and dispose.
+    /// Over-release is clamped at zero so a stray negative delta cannot break the cap
+    /// invariant used by <see cref="TryLease"/>.
+    /// </summary>
+    public void AccountBufferedPipeBytes(long delta)
+    {
+        if (delta > 0)
+        {
+            AccountExtra(delta);
+            return;
+        }
+
+        if (delta == 0) return;
+
+        var requested = -delta;
+        long released;
+        while (true)
+        {
+            var current = Interlocked.Read(ref _leased);
+            if (current <= 0)
+            {
+                released = 0;
+                break;
+            }
+
+            released = Math.Min(current, requested);
+            if (Interlocked.CompareExchange(ref _leased, current - released, current) == current)
+                break;
+        }
+
+        if (released > 0)
+            SignalWaiters();
+
+        if (released < requested)
+            MaybeWarnPipeOverRelease(requested, released);
+    }
+
+    /// <summary>
     /// Wake the head waiter only; they re-attempt <see cref="TryLease"/> so accounting
     /// stays single-owner. Fairness comes from FIFO queue order.
     /// </summary>
@@ -187,6 +231,19 @@ public sealed class InFlightArticleBudget
         Log.Warning(
             "In-flight article memory budget saturated. Leased={Leased:N0} Cap={Cap:N0} Requested={Requested:N0}. Reason: {Reason}",
             LeasedBytes, CapBytes, requested, "backpressure");
+    }
+
+    private void MaybeWarnPipeOverRelease(long requested, long released)
+    {
+        var nowTicks = DateTimeOffset.UtcNow.UtcTicks;
+        var last = Interlocked.Read(ref _lastPipeOverReleaseWarningTicks);
+        if (nowTicks - last < TimeSpan.FromSeconds(30).Ticks) return;
+        if (Interlocked.CompareExchange(ref _lastPipeOverReleaseWarningTicks, nowTicks, last) != last)
+            return;
+
+        Log.Warning(
+            "In-flight article pipe-byte accounting clamped an over-release. Requested={Requested:N0} Released={Released:N0} Leased={Leased:N0} Cap={Cap:N0}. Reason: {Reason}",
+            requested, released, LeasedBytes, CapBytes, "pipe-accounting-over-release");
     }
 
     private sealed class Waiter(long bytes)
