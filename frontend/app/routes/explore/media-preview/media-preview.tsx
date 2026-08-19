@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Alert, Button, Icon, Modal } from "~/components/ui";
 import { formatFileSize } from "~/utils/file-size";
+import { generateUuid } from "~/utils/uuid";
 import { isVideoFile } from "../file-kind/file-kind";
 import { MediaDiagnostics } from "./media-diagnostics";
 import { appendQueryParam, buildMediaSrc, formatClock } from "./media-utils";
@@ -26,7 +27,7 @@ export function MediaPreview(props: MediaPreviewProps) {
 
     // One non-secret correlation id per mounted player; stable across retries
     // so all range requests map to one backend read session.
-    const playerSession = useMemo(() => crypto.randomUUID(), []);
+    const [playerSession] = useState(() => generateUuid());
     const src = useMemo(() => buildMediaSrc(previewUrl, playerSession), [previewUrl, playerSession]);
 
     const player = useMediaPlayer({ src });
