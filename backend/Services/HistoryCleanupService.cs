@@ -56,7 +56,7 @@ public class HistoryCleanupService(IDbContextFactory<DavDatabaseContext> dbConte
                         .ExecuteDeleteAsync(stoppingToken).ConfigureAwait(false);
 
                     // Trigger rclone vfs/forget for deleted items
-                    _ = DavDatabaseContext.RcloneVfsForget(deletedItems);
+                    _ = DavDatabaseContext.RcloneVfsForget(deletedItems, stoppingToken);
                 }
                 else
                 {
