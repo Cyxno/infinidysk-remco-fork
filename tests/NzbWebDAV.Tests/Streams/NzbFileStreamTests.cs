@@ -697,6 +697,124 @@ public class NzbFileStreamTests
         Assert.Equal(0, budget.LeasedBytes);
     }
 
+    [Fact]
+    public async Task FastSeek_AccountsPooledHeadInArticleBudget()
+    {
+        const int segmentSize = 1_000;
+        const int segmentCount = 6;
+        const int seekOffsetInSegment = 10;
+        var rangeStart = segmentSize * 2 + seekOffsetInSegment;
+        var expectedTail = segmentSize - seekOffsetInSegment;
+        var budget = new InFlightArticleBudget(segmentSize * 40);
+        var segmentIds = Enumerable.Range(0, segmentCount).Select(i => $"seg-{i}").ToArray();
+        var segments = segmentIds.ToDictionary(
+            id => id, _ => Enumerable.Repeat((byte)1, segmentSize).ToArray());
+        var rangesById = segmentIds
+            .Zip(Enumerable.Range(0, segmentCount)
+                .Select(i => new LongRange(i * segmentSize, (i + 1) * segmentSize)))
+            .ToDictionary(pair => pair.First, pair => pair.Second);
+        var ranges = Enumerable.Range(0, segmentCount)
+            .Select(i => new LongRange(i * segmentSize, (i + 1) * segmentSize))
+            .ToArray();
+        var client = new FakeNntpClient(segments, useCachedYencStreams: true, segmentRanges: rangesById);
+
+        await using var stream = new NzbFileStream(
+            segmentIds,
+            fileSize: segmentSize * segmentCount,
+            client,
+            articleBufferSize: 0,
+            segmentByteRanges: ranges,
+            usePipelinedBodyRequests: false,
+            fileName: "seek-head.bin",
+            inFlightArticleBudget: budget);
+
+        stream.Seek(rangeStart, SeekOrigin.Begin);
+        var buffer = new byte[16];
+        Assert.Equal(16, await stream.ReadAsync(buffer));
+
+        Assert.Equal(expectedTail, budget.LeasedBytes);
+
+        await stream.DisposeAsync();
+        Assert.Equal(0, budget.LeasedBytes);
+    }
+
+    [Fact]
+    public async Task FastSeek_DisposeBeforeFirstRead_DoesNotLeakLease()
+    {
+        const int segmentSize = 1_000;
+        const int segmentCount = 6;
+        const int seekOffsetInSegment = 10;
+        var rangeStart = segmentSize * 2 + seekOffsetInSegment;
+        var expectedTail = segmentSize - seekOffsetInSegment;
+        var budget = new InFlightArticleBudget(segmentSize * 40);
+        var segmentIds = Enumerable.Range(0, segmentCount).Select(i => $"seg-{i}").ToArray();
+        var segments = segmentIds.ToDictionary(
+            id => id, _ => Enumerable.Repeat((byte)1, segmentSize).ToArray());
+        var rangesById = segmentIds
+            .Zip(Enumerable.Range(0, segmentCount)
+                .Select(i => new LongRange(i * segmentSize, (i + 1) * segmentSize)))
+            .ToDictionary(pair => pair.First, pair => pair.Second);
+        var ranges = Enumerable.Range(0, segmentCount)
+            .Select(i => new LongRange(i * segmentSize, (i + 1) * segmentSize))
+            .ToArray();
+        var client = new FakeNntpClient(segments, useCachedYencStreams: true, segmentRanges: rangesById);
+
+        await using var stream = new NzbFileStream(
+            segmentIds,
+            fileSize: segmentSize * segmentCount,
+            client,
+            articleBufferSize: 0,
+            segmentByteRanges: ranges,
+            usePipelinedBodyRequests: false,
+            fileName: "seek-head-dispose.bin",
+            inFlightArticleBudget: budget);
+
+        await using var spliced = await stream.TryGetSeekStreamFast(rangeStart, CancellationToken.None);
+        Assert.NotNull(spliced);
+        Assert.Equal(expectedTail, budget.LeasedBytes);
+
+        await spliced.DisposeAsync();
+        Assert.Equal(0, budget.LeasedBytes);
+    }
+
+    [Fact]
+    public async Task FastSeek_DownwardGuessCorrection_AccountsPooledHead()
+    {
+        // Tail segment is shorter than average, so rangeStart/avg overshoots and the
+        // correction loop steps index down. The estimate must still be a live lease.
+        var sizes = new[] { 1_800, 1_800, 1_800, 1_800, 1_800, 1_000 };
+        var fileSize = sizes.Sum();
+        var starts = new long[sizes.Length];
+        for (var i = 1; i < sizes.Length; i++)
+            starts[i] = starts[i - 1] + sizes[i - 1];
+        const int rangeStart = 5_000; // in segment 2 [3600, 5400)
+        var expectedTail = starts[2] + sizes[2] - rangeStart;
+        var budget = new InFlightArticleBudget(fileSize);
+        var segmentIds = Enumerable.Range(0, sizes.Length).Select(i => $"seg-{i}").ToArray();
+        var segments = segmentIds.Zip(sizes)
+            .ToDictionary(pair => pair.First, pair => Enumerable.Repeat((byte)1, pair.Second).ToArray());
+        var ranges = sizes.Select((size, i) => new LongRange(starts[i], starts[i] + size)).ToArray();
+        var rangesById = segmentIds.Zip(ranges).ToDictionary(pair => pair.First, pair => pair.Second);
+        var client = new FakeNntpClient(segments, useCachedYencStreams: true, segmentRanges: rangesById);
+
+        await using var stream = new NzbFileStream(
+            segmentIds,
+            fileSize,
+            client,
+            articleBufferSize: 0,
+            segmentByteRanges: ranges,
+            usePipelinedBodyRequests: false,
+            fileName: "seek-head-correct.bin",
+            inFlightArticleBudget: budget);
+
+        await using var spliced = await stream.TryGetSeekStreamFast(rangeStart, CancellationToken.None);
+        Assert.NotNull(spliced);
+        Assert.Equal(expectedTail, budget.LeasedBytes);
+
+        await spliced.DisposeAsync();
+        Assert.Equal(0, budget.LeasedBytes);
+    }
+
     private static FakeNntpClient CreateClient()
     {
         return new FakeNntpClient(
