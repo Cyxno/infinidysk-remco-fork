@@ -83,7 +83,8 @@ public class UsenetStreamingClient : WrappingNntpClient
     }
 
     /// <summary>
-    /// Test hook: wrap a scripted inner client without building provider pools.
+    /// Test constructor that wraps a scripted <see cref="INntpClient"/> without
+    /// opening real provider pools.
     /// </summary>
     internal UsenetStreamingClient(INntpClient inner, RepairPatchStore? repairPatchStore = null)
         : base(inner)
