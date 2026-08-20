@@ -93,6 +93,7 @@ nav = [
     { "Connect" = "community/github.md" },
     { "Contributing" = "community/contributing.md" },
     { "Code boundaries" = "decisions/0001-code-boundaries.md" },
+    { "DI topology" = "decisions/0002-di-topology.md" },
     { "Changelog" = "community/changelog.md" },
     { "About" = "community/about.md" },
     { "0.7 stack announcement" = "community/history/release-0.7.md" },

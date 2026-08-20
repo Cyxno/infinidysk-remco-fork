@@ -259,6 +259,12 @@ public partial class Program
             builder.Services
                 .AddWebdavBasicAuthentication(configManager)
                 .AddSingleton(configManager)
+                .AddSingleton<IConfigReader>(configManager)
+                .AddSingleton<IConfigUpdater>(configManager)
+                .AddSingleton<IConfigChangeSource>(configManager)
+                .AddSingleton<IBlobStore, FileBlobStore>()
+                .AddSingleton<IRcloneClient>(_ => RcloneClient.Current!)
+                .AddSingleton<IWebsocketPublisher>(websocketManager)
                 .AddSingleton(_ =>
                 {
                     var registry = new CollectorRegistry();
@@ -318,6 +324,7 @@ public partial class Program
                     sp.GetRequiredService<UsenetStreamingClient>(),
                     sp.GetRequiredService<ConfigManager>()))
                 .AddSingleton<QueueManager>()
+                .AddSingleton<IQueueCoordinator>(sp => sp.GetRequiredService<QueueManager>())
                 .AddSingleton(sp => new NzbResolutionCache(
                     () => sp.GetRequiredService<IDbContextFactory<DavDatabaseContext>>().CreateDbContext()))
                 .AddSingleton<PreferredOrderStore>()
@@ -430,6 +437,7 @@ public partial class Program
 
             // run
             var app = builder.Build();
+            BlobStore.Use(app.Services.GetRequiredService<IBlobStore>());
             // Must run before anything that reads Scheme/Host/RemoteIpAddress.
             app.UseForwardedHeaders();
             app.UseMiddleware<RequestCorrelationMiddleware>();
