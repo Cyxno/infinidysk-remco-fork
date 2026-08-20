@@ -3,6 +3,7 @@ using NzbWebDAV.Api.Errors;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Extensions;
+using NzbWebDAV.Queue;
 using NzbWebDAV.Utils;
 
 namespace NzbWebDAV.Api.SabControllers.AddFile;
@@ -68,6 +69,21 @@ public class AddFileRequest()
             CancellationToken = context.RequestAborted
         });
     }
+
+    internal NzbSubmissionRequest ToSubmissionRequest() => new()
+    {
+        NzoId = NzoId,
+        ReplaceExistingQueueItem = ReplaceExistingQueueItem,
+        FileName = FileName,
+        NzbFileStream = NzbFileStream,
+        Category = Category,
+        Priority = Priority,
+        PostProcessing = PostProcessing,
+        PauseUntil = PauseUntil,
+        IndexerName = IndexerName,
+        ContentGroupKey = ContentGroupKey,
+        CancellationToken = CancellationToken,
+    };
 
     /// <summary>
     /// Resolve the NZB filename from an optional SAB <c>nzbname</c> param and the uploaded file name.
