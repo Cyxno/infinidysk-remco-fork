@@ -505,7 +505,7 @@ describe("BackendClient", () => {
     await expect(backendClient.getQueue(1)).rejects.toThrow("Failed to get queue: HTTP 500");
   });
 
-  it("uses the HTTP status for ProblemDetails bodies without error", async () => {
+  it("uses ProblemDetails detail when the error field is absent", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(
         {
@@ -518,10 +518,10 @@ describe("BackendClient", () => {
       ),
     );
 
-    await expect(backendClient.getQueue(1)).rejects.toThrow("Failed to get queue: HTTP 400");
+    await expect(backendClient.getQueue(1)).rejects.toThrow("Failed to get queue: nzo_ids invalid");
   });
 
-  it("uses the HTTP status for plain-text error bodies", async () => {
+  it("uses the plain-text error body", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response("nope", {
         status: 502,
@@ -529,7 +529,7 @@ describe("BackendClient", () => {
       }),
     );
 
-    await expect(backendClient.getQueue(1)).rejects.toThrow("Failed to get queue: HTTP 502");
+    await expect(backendClient.getQueue(1)).rejects.toThrow("Failed to get queue: nope");
   });
 
   it("wraps aborted fetches as BackendUnavailableError", async () => {
