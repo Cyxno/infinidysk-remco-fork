@@ -41,6 +41,7 @@ internal static class SabContractAssertions
         Assert.Equal(JsonValueKind.String, problem.GetProperty("traceId").ValueKind);
         Assert.True(response.Headers.TryGetValues("X-Correlation-ID", out var correlation));
         Assert.Equal(Assert.Single(correlation), problem.GetProperty("traceId").GetString());
+        JsonContractValidator.AssertMatchesSchema(json.RootElement, "sab/v1/error.schema.json");
         if (errorContains is not null)
         {
             Assert.Contains(
