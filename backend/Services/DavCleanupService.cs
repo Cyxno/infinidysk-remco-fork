@@ -50,6 +50,7 @@ public class DavCleanupService(IDbContextFactory<DavDatabaseContext> dbContextFa
         {
             var cleanupItemIdPg = await dbContext.DavCleanupItems
                 .AsNoTracking()
+                .OrderBy(x => x.Id)
                 .Select(x => (Guid?)x.Id)
                 .FirstOrDefaultAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -88,8 +89,8 @@ public class DavCleanupService(IDbContextFactory<DavDatabaseContext> dbContextFa
         // Preserve the stored text casing: materializing as Guid would normalize it to
         // uppercase when bound again and miss lowercase rows in SQLite.
         var cleanupItemId = await dbContext.Database
-            .SqlQueryRaw<string>("SELECT Id AS Value FROM DavCleanupItems LIMIT 1")
-            .FirstOrDefaultAsync(cancellationToken)
+            .SqlQueryRaw<string>("SELECT Id AS Value FROM DavCleanupItems ORDER BY Id LIMIT 1")
+            .SingleOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (cleanupItemId == null)
