@@ -25,6 +25,9 @@ export const BACKEND_RECONNECT_MAX_MS = 30_000;
 export type TopicKind = "state" | "stream" | "event";
 
 const TOPIC_KINDS = new Set<TopicKind>(["state", "stream", "event"]);
+export const KEYED_REPLAY_TOPICS = new Set(["cxs"]);
+export const KEYED_REPLAY_RESET_MESSAGE = "reset";
+const KEYED_REPLAY_SEPARATOR = "\0";
 
 type TrackedSocket = WebSocket & { isAlive?: boolean };
 
@@ -52,6 +55,54 @@ export function sendToBrowserClient(client: WebSocket, rawMessage: string): void
   if (client.readyState !== WebSocket.OPEN) return;
   if (client.bufferedAmount > MAX_CLIENT_BUFFERED_AMOUNT) return;
   client.send(rawMessage);
+}
+
+function keyedReplayCacheKey(topic: string, message: string): string | null {
+  if (!KEYED_REPLAY_TOPICS.has(topic)) return null;
+  const separator = message.indexOf("|");
+  return separator > 0 ? `${topic}${KEYED_REPLAY_SEPARATOR}${message.slice(0, separator)}` : null;
+}
+
+export function cacheStateMessage(
+  lastMessage: Map<string, string>,
+  topic: string,
+  message: string,
+  rawMessage: string,
+): boolean {
+  if (KEYED_REPLAY_TOPICS.has(topic) && message === KEYED_REPLAY_RESET_MESSAGE) {
+    clearKeyedReplayState(lastMessage, topic);
+    return false;
+  }
+
+  const keyedCacheKey = keyedReplayCacheKey(topic, message);
+  if (!keyedCacheKey) {
+    lastMessage.set(topic, rawMessage);
+    return true;
+  }
+
+  // Reinsert updates so replay delivers the latest aggregate totals last.
+  lastMessage.delete(keyedCacheKey);
+  lastMessage.set(keyedCacheKey, rawMessage);
+  return true;
+}
+
+export function replayStateMessages(lastMessage: Map<string, string>, topic: string): string[] {
+  if (!KEYED_REPLAY_TOPICS.has(topic)) {
+    const message = lastMessage.get(topic);
+    return message ? [message] : [];
+  }
+
+  const prefix = `${topic}${KEYED_REPLAY_SEPARATOR}`;
+  return [...lastMessage.entries()]
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([, message]) => message);
+}
+
+export function clearKeyedReplayState(lastMessage: Map<string, string>, topic: string): void {
+  const prefix = `${topic}${KEYED_REPLAY_SEPARATOR}`;
+  for (const key of lastMessage.keys()) {
+    if (key.startsWith(prefix)) lastMessage.delete(key);
+  }
 }
 
 /**
@@ -131,8 +182,9 @@ function initializeWebsocketServer(wss: WebSocketServer) {
         if (topicSubscriptions) topicSubscriptions.add(ws);
         else subscriptions.set(topic, new Set<TrackedSocket>([ws]));
         if (topics[topic] === "state") {
-          const messageToSend = lastMessage.get(topic);
-          if (messageToSend) sendToBrowserClient(ws, messageToSend);
+          for (const messageToSend of replayStateMessages(lastMessage, topic)) {
+            sendToBrowserClient(ws, messageToSend);
+          }
         }
       }
 
@@ -263,7 +315,7 @@ export function initializeWebsocketClient(
         const { Topic: topic, Message: message } = topicMessage as Record<string, unknown>;
         if (typeof topic !== "string" || typeof message !== "string") return;
 
-        lastMessage.set(topic, rawMessage);
+        if (!cacheStateMessage(lastMessage, topic, message, rawMessage)) return;
         const subscribed = subscriptions.get(topic) || [];
         subscribed.forEach((client) => {
           sendToBrowserClient(client, rawMessage);

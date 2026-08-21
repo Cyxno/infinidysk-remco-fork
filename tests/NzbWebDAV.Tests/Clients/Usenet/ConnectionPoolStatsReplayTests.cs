@@ -8,6 +8,36 @@ namespace NzbWebDAV.Tests.Clients.Usenet;
 public class ConnectionPoolStatsReplayTests
 {
     [Fact]
+    public async Task NewGeneration_ClearsRetiredProviderReplayState()
+    {
+        var websocketManager = new WebsocketManager();
+        await websocketManager.SendMessage(
+            WebsocketTopic.UsenetConnections,
+            "4|8|8|8|60|8");
+
+        _ = new ConnectionPoolStats(
+            new UsenetProviderConfig
+            {
+                Providers =
+                [
+                    new UsenetProviderConfig.ConnectionDetails
+                    {
+                        Type = ProviderType.Pooled,
+                        Host = "news.example.com",
+                        Port = 563,
+                        UseSsl = true,
+                        User = "user",
+                        Pass = "pass",
+                        MaxConnections = 10,
+                    },
+                ],
+            },
+            websocketManager);
+
+        Assert.Equal("reset", websocketManager.PeekLastMessage(WebsocketTopic.UsenetConnections));
+    }
+
+    [Fact]
     public async Task Flush_WithoutSubscribers_KeepsReplayStateFresh()
     {
         var websocketManager = new WebsocketManager();
@@ -38,7 +68,8 @@ public class ConnectionPoolStatsReplayTests
             this,
             new ConnectionPoolStats.ConnectionPoolChangedEventArgs(3, 1, 10));
 
-        await WaitUntil(() => websocketManager.PeekLastMessage(WebsocketTopic.UsenetConnections) is not null);
+        await WaitUntil(() =>
+            websocketManager.PeekLastMessage(WebsocketTopic.UsenetConnections) == "0|3|1|3|10|1");
         Assert.Equal(
             "0|3|1|3|10|1",
             websocketManager.PeekLastMessage(WebsocketTopic.UsenetConnections));
@@ -73,7 +104,8 @@ public class ConnectionPoolStatsReplayTests
             this,
             new ConnectionPoolStats.ConnectionPoolChangedEventArgs(5, 2, 135));
 
-        await WaitUntil(() => websocketManager.PeekLastMessage(WebsocketTopic.UsenetConnections) is not null);
+        await WaitUntil(() =>
+            websocketManager.PeekLastMessage(WebsocketTopic.UsenetConnections) == "0|5|2|5|135|2");
         Assert.Equal(
             "0|5|2|5|135|2",
             websocketManager.PeekLastMessage(WebsocketTopic.UsenetConnections));
