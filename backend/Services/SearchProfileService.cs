@@ -516,18 +516,27 @@ public class SearchProfileService(
             {
                 if (!seen.Add(p.NzbUrl)) continue;
                 var existing = candidates.FirstOrDefault(c => c.NzbUrl == p.NzbUrl);
-                ordered.Add(existing ?? new NzbResolutionCache.Candidate
+                if (existing is not null)
                 {
-                    IndexerName = p.IndexerName,
-                    IndexerUserAgent = p.IndexerUserAgent,
-                    NzbUrl = p.NzbUrl,
-                    Title = p.Title,
-                    Size = p.Size,
-                    Grabs = p.Grabs,
-                    Poster = p.Poster,
-                    UsenetDate = p.UsenetDate,
-                    ProxyUrl = p.ProxyUrl,
-                });
+                    existing.VerifiedAvailable = true;
+                    ordered.Add(existing);
+                }
+                else
+                {
+                    ordered.Add(new NzbResolutionCache.Candidate
+                    {
+                        IndexerName = p.IndexerName,
+                        IndexerUserAgent = p.IndexerUserAgent,
+                        NzbUrl = p.NzbUrl,
+                        Title = p.Title,
+                        Size = p.Size,
+                        Grabs = p.Grabs,
+                        Poster = p.Poster,
+                        UsenetDate = p.UsenetDate,
+                        ProxyUrl = p.ProxyUrl,
+                        VerifiedAvailable = true,
+                    });
+                }
             }
 
             foreach (var c in candidates)
@@ -566,7 +575,13 @@ public class SearchProfileService(
             foreach (var p in WtJson.ReadPointers(seasonRow.Shortlist))
             {
                 if (p.Verdict != "available") continue;
-                if (candidates.Any(c => c.NzbUrl == p.NzbUrl)) continue;
+                var existing = candidates.FirstOrDefault(c => c.NzbUrl == p.NzbUrl);
+                if (existing is not null)
+                {
+                    existing.VerifiedAvailable = true;
+                    continue;
+                }
+
                 candidates.Add(new NzbResolutionCache.Candidate
                 {
                     IndexerName = p.IndexerName,
@@ -578,6 +593,7 @@ public class SearchProfileService(
                     Poster = p.Poster,
                     UsenetDate = p.UsenetDate,
                     ProxyUrl = p.ProxyUrl,
+                    VerifiedAvailable = true,
                 });
             }
         }
