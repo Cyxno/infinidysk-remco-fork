@@ -136,6 +136,44 @@ internal sealed class Par2FileSliceMap
         }
     }
 
+    /// <summary>
+    /// Largest set of source segment bodies needed to assemble one target slice.
+    /// A sequential repair pass evicts segments as soon as their final overlapping
+    /// slice has been consumed, so it never needs to retain more than this window.
+    /// </summary>
+    public long EstimateMaxOverlappingSegmentBytes()
+    {
+        // A segment contributes its full retained body to every slice it overlaps.
+        // Record its enter/leave slices instead of rescanning every segment for every
+        // slice. This works for every range shape accepted by TryCreate, including
+        // persisted non-contiguous or overlapping ranges.
+        var deltas = new SortedDictionary<int, long>();
+        foreach (var range in SegmentRanges.Where(range => range.Count > 0))
+        {
+            var first = checked((int)(range.StartInclusive / SliceSize));
+            var last = checked((int)((range.EndExclusive - 1) / SliceSize));
+            AddDelta(first, range.Count);
+            AddDelta(checked(last + 1), -range.Count);
+        }
+
+        long current = 0;
+        long max = 0;
+        foreach (var delta in deltas.Values)
+        {
+            current = checked(current + delta);
+            if (current > max)
+                max = current;
+        }
+
+        return max;
+
+        void AddDelta(int slice, long delta)
+        {
+            deltas.TryGetValue(slice, out var currentDelta);
+            deltas[slice] = checked(currentDelta + delta);
+        }
+    }
+
     public LongRange SliceFileRange(int globalSlice)
     {
         var local = globalSlice - GlobalSliceBase;
