@@ -20,8 +20,11 @@ public class RadarrClient(string host, string apiKey) : ArrClient(host, apiKey)
     public Task<List<RadarrMovie>> GetMoviesAsync(CancellationToken ct = default) =>
         Get<List<RadarrMovie>>($"/movie", ct);
 
-    public Task<RadarrQueue> GetRadarrQueueAsync() =>
-        Get<RadarrQueue>($"/queue?protocol=usenet&pageSize=5000");
+    public Task<RadarrQueue> GetRadarrQueueAsync(CancellationToken ct = default) =>
+        Get<RadarrQueue>($"/queue?protocol=usenet&pageSize=5000", ct);
+
+    public override async Task<ArrQueue<ArrQueueRecord>> GetQueueAsync(CancellationToken ct = default) =>
+        (await GetRadarrQueueAsync(ct).ConfigureAwait(false)).ToGeneric();
 
     public Task<HttpStatusCode> DeleteMovieFile(int id, CancellationToken ct = default) =>
         Delete($"/moviefile/{id}", ct: ct);
@@ -29,6 +32,7 @@ public class RadarrClient(string host, string apiKey) : ArrClient(host, apiKey)
     public override async Task<ArrRepairOutcome> RemoveAndBlocklist(
         string symlinkOrStrmPath,
         Guid downloadId,
+        Func<IReadOnlyList<string>, bool>? shouldRequestSearch = null,
         CancellationToken ct = default)
     {
         var movieIds = await GetMovieFileIds(symlinkOrStrmPath, ct).ConfigureAwait(false);
@@ -41,6 +45,16 @@ public class RadarrClient(string host, string apiKey) : ArrClient(host, apiKey)
             throw new InvalidOperationException($"Failed to delete movie file `{symlinkOrStrmPath}` from radarr instance `{Host}`.");
 
         await MarkHistoryFailed(historyId.Value, ct).ConfigureAwait(false);
+
+        if (shouldRequestSearch is not null && !shouldRequestSearch([$"movie:{movieIds.MovieId}"]))
+        {
+            Log.Warning(
+                "Radarr repair on {Host}: automatic replacement-search limit reached for movie {MovieId}; " +
+                "the file was removed and its download blocklisted without starting another search.",
+                Host,
+                movieIds.MovieId);
+            return ArrRepairOutcome.RemoveAndBlocklistSucceededSearchWithheld;
+        }
 
         try
         {
