@@ -29,6 +29,7 @@ using NzbWebDAV.Extensions;
 using NzbWebDAV.Logging;
 using NzbWebDAV.Queue;
 using NzbWebDAV.Websocket;
+using Serilog;
 
 namespace NzbWebDAV.Api.SabControllers;
 
@@ -44,6 +45,15 @@ public class SabApiController(
     WarningLogBuffer warningLogBuffer
 ) : ControllerBase
 {
+    private static readonly LogThrottle AuthenticationFailureThrottle = new();
+    private static readonly TimeSpan AuthenticationFailureLogInterval = TimeSpan.FromMinutes(5);
+    private static readonly HashSet<string> KnownModes =
+    [
+        "version", "status", "get_cats", "get_config", "fullstatus", "server_stats", "warnings",
+        "addfile", "addurl", "pause", "resume", "speedlimit", "queue", "switch", "history",
+        "change_cat", "retry",
+    ];
+
     [HttpGet]
     [HttpPost]
     public async Task<IActionResult> HandleApiRequests()
@@ -72,6 +82,7 @@ public class SabApiController(
         }
         catch (UnauthorizedAccessException e)
         {
+            LogAuthenticationFailure();
             return Unauthorized(new SabBaseResponse()
             {
                 Status = false,
@@ -87,6 +98,34 @@ public class SabApiController(
                 Error = "An internal server error occurred."
             });
         }
+    }
+
+    private void LogAuthenticationFailure()
+    {
+        var requestedMode = HttpContext.GetRequestParam("mode");
+        var mode = requestedMode is not null && KnownModes.Contains(requestedMode)
+            ? requestedMode
+            : "unknown";
+        var requestedCategory = HttpContext.GetRequestParam("cat");
+        var category = configManager.GetApiCategories()
+            .FirstOrDefault(configured =>
+                string.Equals(configured, requestedCategory, StringComparison.OrdinalIgnoreCase))
+            ?? "unknown";
+        var source = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        // Source remains useful event context, but it must not be part of the
+        // process-lifetime throttle key: unauthenticated clients can generate
+        // an unbounded number of distinct remote addresses.
+        var key = $"{mode}|{category}";
+        if (!AuthenticationFailureThrottle.ShouldLog(key, AuthenticationFailureLogInterval, out var suppressed))
+            return;
+
+        Log.Warning(
+            "SAB API authentication rejected for mode {Mode}, category {Category}, source {Source}. " +
+            "Update the configured API key; {SuppressedCount} matching failures were suppressed.",
+            mode,
+            category,
+            source,
+            suppressed);
     }
 
     public BaseController GetController()
