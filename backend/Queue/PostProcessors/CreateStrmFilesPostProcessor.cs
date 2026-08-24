@@ -19,8 +19,21 @@ public class CreateStrmFilesPostProcessor(
     public async Task CreateStrmFilesAsync()
     {
         var candidates = CollectVideoItems();
-        foreach (var videoItem in candidates)
-            await CreateStrmFileAsync(videoItem).ConfigureAwait(false);
+        var created = new List<DavItem>();
+        try
+        {
+            foreach (var videoItem in candidates)
+            {
+                if (await CreateStrmFileAsync(videoItem).ConfigureAwait(false))
+                    created.Add(videoItem);
+            }
+        }
+        catch
+        {
+            foreach (var createdItem in created)
+                DeleteStrmFile(createdItem);
+            throw;
+        }
     }
 
     internal List<DavItem> CollectVideoItems()
@@ -47,7 +60,7 @@ public class CreateStrmFilesPostProcessor(
         return byId.Values.ToList();
     }
 
-    private static bool IsStrmCandidate(DavItem item) =>
+    internal static bool IsStrmCandidate(DavItem item) =>
         FilenameUtil.IsVideoFile(item.Name)
         && !item.Name.EndsWith(".strm", StringComparison.OrdinalIgnoreCase);
 
@@ -55,32 +68,45 @@ public class CreateStrmFilesPostProcessor(
     /// Writes (or updates) the STRM sidecar for a DavItem. Shared by queue post-processing
     /// and the Recreate STRM maintenance task.
     /// </summary>
-    internal static async Task WriteStrmFileAsync(
+    internal static async Task<bool> WriteStrmFileAsync(
         ConfigManager configManager,
         DavItem davItem,
         bool forceRewrite,
         CancellationToken cancellationToken = default)
     {
         if (!IsStrmCandidate(davItem))
-            return;
+            return false;
 
-        var strmFilePath = GetStrmFilePath(configManager, davItem);
+        var strmFilePath = Path.GetFullPath(GetStrmFilePath(configManager, davItem));
+        var completedDownloadsRoot = Path.GetFullPath(configManager.GetStrmCompletedDownloadDir());
+        if (!IsPathWithinRoot(strmFilePath, completedDownloadsRoot))
+            throw new IOException($"Generated STRM path '{strmFilePath}' escapes its configured output directory.");
+        if (HasSymlinkedAncestor(strmFilePath, completedDownloadsRoot))
+            throw new IOException($"Generated STRM path '{strmFilePath}' is beneath a symbolic-link directory.");
+
         var directoryName = Path.GetDirectoryName(strmFilePath);
         if (directoryName != null)
             await Task.Run(() => Directory.CreateDirectory(directoryName), cancellationToken).ConfigureAwait(false);
+        if (HasSymlinkedAncestor(strmFilePath, completedDownloadsRoot))
+            throw new IOException($"Generated STRM path '{strmFilePath}' is beneath a symbolic-link directory.");
 
         var targetUrl = GetStrmTargetUrl(configManager, davItem);
         if (!forceRewrite && File.Exists(strmFilePath))
         {
             var existing = await File.ReadAllTextAsync(strmFilePath, cancellationToken).ConfigureAwait(false);
             if (existing == targetUrl)
-                return;
+                return false;
         }
 
+        var wasCreated = !File.Exists(strmFilePath);
         await File.WriteAllTextAsync(strmFilePath, targetUrl, cancellationToken).ConfigureAwait(false);
+        davItem.GeneratedStrmOutputRoot = completedDownloadsRoot;
+        davItem.GeneratedStrmPath = strmFilePath;
+        davItem.GeneratedStrmTarget = targetUrl;
+        return wasCreated;
     }
 
-    private async Task CreateStrmFileAsync(DavItem davItem) =>
+    private async Task<bool> CreateStrmFileAsync(DavItem davItem) =>
         await WriteStrmFileAsync(configManager, davItem, forceRewrite: false).ConfigureAwait(false);
 
     internal static string GetStrmFilePath(ConfigManager configManager, DavItem davItem)
@@ -92,13 +118,16 @@ public class CreateStrmFilesPostProcessor(
     /// <summary>
     /// Removes a generated STRM sidecar only when its target belongs to <paramref name="davItem"/>.
     /// </summary>
-    internal static void DeleteStrmFile(ConfigManager configManager, DavItem davItem)
+    internal static void DeleteStrmFile(DavItem davItem)
     {
-        if (!IsStrmCandidate(davItem))
+        if (!IsStrmCandidate(davItem)
+            || string.IsNullOrWhiteSpace(davItem.GeneratedStrmOutputRoot)
+            || string.IsNullOrWhiteSpace(davItem.GeneratedStrmPath)
+            || string.IsNullOrWhiteSpace(davItem.GeneratedStrmTarget))
             return;
 
-        var completedDownloadsRoot = Path.GetFullPath(configManager.GetStrmCompletedDownloadDir());
-        var strmFilePath = Path.GetFullPath(GetStrmFilePath(configManager, davItem));
+        var completedDownloadsRoot = Path.GetFullPath(davItem.GeneratedStrmOutputRoot);
+        var strmFilePath = Path.GetFullPath(davItem.GeneratedStrmPath);
         if (!IsPathWithinRoot(strmFilePath, completedDownloadsRoot))
             return;
 
@@ -122,8 +151,7 @@ public class CreateStrmFilesPostProcessor(
         if (strmOrSymlink is not SymlinkAndStrmUtil.StrmInfo strmInfo)
             return;
 
-        var link = OrganizedLinksUtil.GetDavItemLink(strmInfo);
-        if (link?.DavItemId != davItem.Id)
+        if (!string.Equals(strmInfo.TargetUrl, davItem.GeneratedStrmTarget, StringComparison.Ordinal))
             return;
 
         File.Delete(strmFilePath);
@@ -140,7 +168,7 @@ public class CreateStrmFilesPostProcessor(
     internal string GetStrmFilePath(DavItem davItem) =>
         GetStrmFilePath(configManager, davItem);
 
-    private static bool IsPathWithinRoot(string path, string root)
+    internal static bool IsPathWithinRoot(string path, string root)
     {
         var comparison = OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase
@@ -151,7 +179,7 @@ public class CreateStrmFilesPostProcessor(
         return path.StartsWith(rootWithSeparator, comparison);
     }
 
-    private static bool HasSymlinkedAncestor(string path, string root)
+    internal static bool HasSymlinkedAncestor(string path, string root)
     {
         var directoryPath = Path.GetDirectoryName(path);
         while (directoryPath is not null)
@@ -171,7 +199,7 @@ public class CreateStrmFilesPostProcessor(
         return true;
     }
 
-    private static void DeleteEmptyParentDirectories(string? directoryPath, string root)
+    internal static void DeleteEmptyParentDirectories(string? directoryPath, string root)
     {
         while (directoryPath != null && IsPathWithinRoot(directoryPath, root))
         {

@@ -1,5 +1,4 @@
 using NzbWebDAV.Config;
-using NzbWebDAV.Database.Models;
 
 namespace NzbWebDAV.Api.SabControllers;
 
@@ -9,6 +8,11 @@ internal static class SabPathResolver
     {
         return configManager.GetImportStrategy() == "strm"
             ? configManager.GetStrmCompletedDownloadDir()
-            : Path.Join(configManager.GetRcloneMountDir(), DavItem.SymlinkFolder.Name);
+            : GetSymlinkCompletedDir(configManager);
+    }
+
+    internal static string GetSymlinkCompletedDir(ConfigManager configManager)
+    {
+        return configManager.GetSymlinkCompletedDownloadDir();
     }
 }

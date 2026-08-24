@@ -60,7 +60,19 @@ public class HistoryCleanupService(
             // Collect items to delete for vfs/forget and STRM ownership checks.
             var deletedItems = await dbContext.Items
                 .Where(x => x.HistoryItemId == cleanupItem.Id)
-                .Select(x => new DavItem { Id = x.Id, Name = x.Name, Type = x.Type, Path = x.Path })
+                .Select(x => new DavItem
+                {
+                    Id = x.Id,
+                    Name = x.Name,
+                    Type = x.Type,
+                    Path = x.Path,
+                    GeneratedStrmOutputRoot = x.GeneratedStrmOutputRoot,
+                    GeneratedStrmPath = x.GeneratedStrmPath,
+                    GeneratedStrmTarget = x.GeneratedStrmTarget,
+                    GeneratedSymlinkOutputRoot = x.GeneratedSymlinkOutputRoot,
+                    GeneratedSymlinkPath = x.GeneratedSymlinkPath,
+                    GeneratedSymlinkTarget = x.GeneratedSymlinkTarget,
+                })
                 .ToListAsync(cancellationToken).ConfigureAwait(false);
 
             // Loud warning for large deletes; does not block (SAB semantics unchanged).
@@ -75,7 +87,8 @@ public class HistoryCleanupService(
                     "history-cleanup",
                     deletedItem,
                     $"DeleteMountedFiles=true historyItemId={cleanupItem.Id}");
-                CreateStrmFilesPostProcessor.DeleteStrmFile(configManager, deletedItem);
+                CreateSymlinkFilesPostProcessor.DeleteSymlinkFile(deletedItem);
+                CreateStrmFilesPostProcessor.DeleteStrmFile(deletedItem);
             }
 
             // Delete the corresponding dav-items.

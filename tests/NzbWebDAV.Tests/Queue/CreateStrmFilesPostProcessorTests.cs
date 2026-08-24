@@ -112,6 +112,55 @@ public class CreateStrmFilesPostProcessorTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateStrmFilesAsync_RollsBackEarlierFilesWhenLaterWriteFails()
+    {
+        var category = SeedDirectory(DavItem.ContentFolder, "tv");
+        var job = SeedDirectory(category, "Show", _historyItemId);
+        var second = SeedVideo(job, "second.mkv", _historyItemId);
+        await _context.SaveChangesAsync();
+        _context.ChangeTracker.Clear();
+        // Added items are collected before persisted rows, so this write always
+        // succeeds first and must be rolled back when the later destination fails.
+        var first = SeedVideo(job, "first.mkv", _historyItemId);
+
+        var secondPath = CreateStrmFilesPostProcessor.GetStrmFilePath(_config, second);
+        Directory.CreateDirectory(secondPath);
+
+        var processor = new CreateStrmFilesPostProcessor(_config, _dbClient, _historyItemId);
+        await Assert.ThrowsAnyAsync<Exception>(() => processor.CreateStrmFilesAsync());
+
+        Assert.False(File.Exists(CreateStrmFilesPostProcessor.GetStrmFilePath(_config, first)));
+        Assert.True(Directory.Exists(secondPath));
+    }
+
+    [Fact]
+    public async Task DeleteStrmFile_UsesPersistedPathAfterCompletedDirectoryChanges()
+    {
+        var davItem = new DavItem
+        {
+            Id = Guid.NewGuid(),
+            Name = "episode.mkv",
+            Type = DavItem.ItemType.UsenetFile,
+            Path = "/content/tv/Show/episode.mkv",
+        };
+        await CreateStrmFilesPostProcessor.WriteStrmFileAsync(_config, davItem, forceRewrite: false);
+        var originalPath = davItem.GeneratedStrmPath;
+        Assert.True(File.Exists(originalPath));
+
+        var movedDir = Path.Join(Path.GetTempPath(), $"strm-moved-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(movedDir);
+        _config.UpdateValues(
+        [
+            new() { ConfigName = ConfigKeys.ApiCompletedDownloadsDir, ConfigValue = movedDir },
+        ]);
+
+        CreateStrmFilesPostProcessor.DeleteStrmFile(davItem);
+
+        Assert.False(File.Exists(originalPath));
+        try { Directory.Delete(movedDir, recursive: true); } catch (IOException) { /* best effort */ }
+    }
+
+    [Fact]
     public async Task DeleteStrmFile_RemovesOwnedSidecarAndEmptyDirectories()
     {
         var davItem = new DavItem
@@ -124,7 +173,7 @@ public class CreateStrmFilesPostProcessorTests : IDisposable
         var strmPath = CreateStrmFilesPostProcessor.GetStrmFilePath(_config, davItem);
         await CreateStrmFilesPostProcessor.WriteStrmFileAsync(_config, davItem, forceRewrite: false);
 
-        CreateStrmFilesPostProcessor.DeleteStrmFile(_config, davItem);
+        CreateStrmFilesPostProcessor.DeleteStrmFile(davItem);
 
         Assert.False(File.Exists(strmPath));
         Assert.False(Directory.Exists(Path.GetDirectoryName(strmPath)));
@@ -153,8 +202,8 @@ public class CreateStrmFilesPostProcessorTests : IDisposable
             strmPath,
             CreateStrmFilesPostProcessor.GetStrmTargetUrl(_config, otherItem));
 
-        CreateStrmFilesPostProcessor.DeleteStrmFile(_config, davItem);
-        CreateStrmFilesPostProcessor.DeleteStrmFile(_config, davItem);
+        CreateStrmFilesPostProcessor.DeleteStrmFile(davItem);
+        CreateStrmFilesPostProcessor.DeleteStrmFile(davItem);
 
         Assert.True(File.Exists(strmPath));
     }
@@ -176,7 +225,7 @@ public class CreateStrmFilesPostProcessorTests : IDisposable
                 strmPath,
                 CreateStrmFilesPostProcessor.GetStrmTargetUrl(_config, davItem));
 
-            CreateStrmFilesPostProcessor.DeleteStrmFile(_config, davItem);
+            CreateStrmFilesPostProcessor.DeleteStrmFile(davItem);
 
             Assert.True(File.Exists(strmPath));
         }
@@ -207,7 +256,7 @@ public class CreateStrmFilesPostProcessorTests : IDisposable
                 strmPath,
                 CreateStrmFilesPostProcessor.GetStrmTargetUrl(_config, davItem));
 
-            CreateStrmFilesPostProcessor.DeleteStrmFile(_config, davItem);
+            CreateStrmFilesPostProcessor.DeleteStrmFile(davItem);
 
             Assert.True(File.Exists(strmPath));
         }
