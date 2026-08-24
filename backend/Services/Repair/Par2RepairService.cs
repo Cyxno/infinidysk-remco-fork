@@ -36,6 +36,7 @@ public class Par2RepairService : BackgroundService
     private readonly Channel<RepairWorkItem> _queue;
     private readonly Channel<ZeroFillEvent> _zeroFillQueue;
     private readonly ConcurrentDictionary<Guid, byte> _queuedOrRunning = new();
+    private readonly ConcurrentDictionary<Guid, RepairFlight> _repairFlights = new();
     private readonly ConcurrentDictionary<string, byte> _pendingZeroFillPaths = new(StringComparer.Ordinal);
     private long _totalSucceeded;
     private long _totalFailed;
@@ -116,10 +117,22 @@ public class Par2RepairService : BackgroundService
         if (!_queuedOrRunning.TryAdd(davItem.Id, 0))
             return;
 
-        var item = new RepairWorkItem(davItem.Id, davItem.Path, missingSegmentIds.Distinct().ToArray());
+        var flight = new RepairFlight();
+        if (!_repairFlights.TryAdd(davItem.Id, flight))
+        {
+            _queuedOrRunning.TryRemove(davItem.Id, out _);
+            return;
+        }
+
+        var item = new RepairWorkItem(
+            davItem.Id,
+            davItem.Path,
+            missingSegmentIds.Distinct().ToArray(),
+            flight);
         if (!_queue.Writer.TryWrite(item))
         {
             _queuedOrRunning.TryRemove(davItem.Id, out _);
+            _repairFlights.TryRemove(new KeyValuePair<Guid, RepairFlight>(davItem.Id, flight));
             Log.Warning(
                 "PAR2 repair queue full ({Capacity}); dropping repair request for {Path}",
                 MaxQueueLength, davItem.Path);
@@ -135,11 +148,31 @@ public class Par2RepairService : BackgroundService
     /// Returns true when reconstruction succeeded and patches were committed.
     /// Virtual so health-check classification tests can script the outcome.
     /// </summary>
-    public virtual Task<bool> TryPar2RepairAsync(
+    public virtual async Task<bool> TryPar2RepairAsync(
         DavItem davItem,
         IReadOnlyList<string>? missingSegmentIds,
         CancellationToken ct)
-        => RunRepairAsync(davItem, missingSegmentIds, queueGuard: false, ct);
+    {
+        if (!_configManager.IsPar2RepairEnabled())
+            return false;
+
+        var mine = new RepairFlight();
+        var flight = _repairFlights.GetOrAdd(davItem.Id, mine);
+        if (ReferenceEquals(flight, mine))
+            return await RunFlightAsync(flight, davItem, missingSegmentIds, queueGuard: false, ct)
+                .ConfigureAwait(false);
+
+        try
+        {
+            return await flight.Task.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // The repair owner stopped; callers should follow their normal safe fallback
+            // rather than surfacing a cancellation that they did not request.
+            return false;
+        }
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -205,26 +238,40 @@ public class Par2RepairService : BackgroundService
 
     private async Task ProcessRepairQueueAsync(CancellationToken stoppingToken)
     {
-        await foreach (var item in _queue.Reader.ReadAllAsync(stoppingToken).ConfigureAwait(false))
+        try
         {
-            try
+            await foreach (var item in _queue.Reader.ReadAllAsync(stoppingToken).ConfigureAwait(false))
             {
-                await ProcessQueueItemAsync(item, stoppingToken).ConfigureAwait(false);
+                try
+                {
+                    await ProcessQueueItemAsync(item, stoppingToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    CancelFlight(item.DavItemId, item.Flight, stoppingToken);
+                    throw;
+                }
+                catch (Exception e) when (e is not OutOfMemoryException)
+                {
+                    _queuedOrRunning.TryRemove(item.DavItemId, out _);
+                    CompleteFlight(item.DavItemId, item.Flight, false);
+                    e.LogWarningKnownOrStack("PAR2 background repair worker failed for {Path}", item.Path);
+                }
+                catch (OutOfMemoryException oom)
+                {
+                    _queuedOrRunning.TryRemove(item.DavItemId, out _);
+                    CompleteFlight(item.DavItemId, item.Flight, false);
+                    OomDiagnostics.LogHeapStateOnOom(oom, "PAR2 background repair worker");
+                    Log.Warning("PAR2 background repair worker deferred after exhausting managed memory. Path: {Path}", item.Path);
+                }
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        }
+        finally
+        {
+            while (_queue.Reader.TryRead(out var abandoned))
             {
-                throw;
-            }
-            catch (Exception e) when (e is not OutOfMemoryException)
-            {
-                _queuedOrRunning.TryRemove(item.DavItemId, out _);
-                e.LogWarningKnownOrStack("PAR2 background repair worker failed for {Path}", item.Path);
-            }
-            catch (OutOfMemoryException oom)
-            {
-                _queuedOrRunning.TryRemove(item.DavItemId, out _);
-                OomDiagnostics.LogHeapStateOnOom(oom, "PAR2 background repair worker");
-                Log.Warning("PAR2 background repair worker deferred after exhausting managed memory. Path: {Path}", item.Path);
+                _queuedOrRunning.TryRemove(abandoned.DavItemId, out _);
+                CancelFlight(abandoned.DavItemId, abandoned.Flight, stoppingToken);
             }
         }
     }
@@ -362,11 +409,53 @@ public class Par2RepairService : BackgroundService
         if (davItem == null)
         {
             _queuedOrRunning.TryRemove(item.DavItemId, out _);
+            CompleteFlight(item.DavItemId, item.Flight, false);
             return;
         }
 
-        await RunRepairAsync(davItem, item.MissingSegmentIds, queueGuard: true, ct)
+        await RunFlightAsync(item.Flight, davItem, item.MissingSegmentIds, queueGuard: true, ct)
             .ConfigureAwait(false);
+    }
+
+    private async Task<bool> RunFlightAsync(
+        RepairFlight flight,
+        DavItem davItem,
+        IReadOnlyList<string>? missingSegmentIds,
+        bool queueGuard,
+        CancellationToken ct)
+    {
+        try
+        {
+            var result = await RunRepairAsync(davItem, missingSegmentIds, queueGuard, ct).ConfigureAwait(false);
+            flight.Completion.TrySetResult(result);
+            return result;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            flight.Completion.TrySetCanceled(ct);
+            throw;
+        }
+        catch (Exception e)
+        {
+            flight.Completion.TrySetException(e);
+            throw;
+        }
+        finally
+        {
+            _repairFlights.TryRemove(new KeyValuePair<Guid, RepairFlight>(davItem.Id, flight));
+        }
+    }
+
+    private void CompleteFlight(Guid davItemId, RepairFlight flight, bool result)
+    {
+        flight.Completion.TrySetResult(result);
+        _repairFlights.TryRemove(new KeyValuePair<Guid, RepairFlight>(davItemId, flight));
+    }
+
+    private void CancelFlight(Guid davItemId, RepairFlight flight, CancellationToken cancellationToken)
+    {
+        flight.Completion.TrySetCanceled(cancellationToken);
+        _repairFlights.TryRemove(new KeyValuePair<Guid, RepairFlight>(davItemId, flight));
     }
 
     private async Task<bool> RunRepairAsync(
@@ -1590,7 +1679,19 @@ public class Par2RepairService : BackgroundService
         long PeakRetainedSourceBytes,
         long RetainedSourceLimitBytes);
 
-    private sealed record RepairWorkItem(Guid DavItemId, string Path, string[] MissingSegmentIds);
+    private sealed class RepairFlight
+    {
+        public TaskCompletionSource<bool> Completion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<bool> Task => Completion.Task;
+    }
+
+    private sealed record RepairWorkItem(
+        Guid DavItemId,
+        string Path,
+        string[] MissingSegmentIds,
+        RepairFlight Flight);
 
     private sealed record ZeroFillEvent(string Path, string SegmentId, bool IsCorruption = false);
 
