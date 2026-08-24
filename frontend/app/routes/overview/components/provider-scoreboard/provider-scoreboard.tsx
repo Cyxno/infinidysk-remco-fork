@@ -4,6 +4,9 @@ import type {
   ProviderRow,
 } from "~/clients/backend-client.server";
 import { formatBytes, formatNumber, formatPercent, formatSpeed } from "../../utils/format";
+import { settingsPath } from "~/navigation/settings-tabs";
+import { Tooltip } from "~/components/ui";
+import { WidgetLink } from "../widget-link/widget-link";
 
 export type ProviderScoreboardProps = {
   providers: ProviderRow[];
@@ -12,6 +15,9 @@ export type ProviderScoreboardProps = {
 
 export function ProviderScoreboard({ providers, window }: ProviderScoreboardProps) {
   const total = providers.reduce((s, p) => s + p.articles, 0);
+  const hasOpenCircuit = providers.some(
+    (p) => p.circuitState === "open" || p.circuitState === "halfOpen",
+  );
   const outageHelp = `Circuit-open time per ${outageIntervalLabel(window)} interval on a fixed 0–100% scale. Brief trips use a minimum-height tick.`;
   const speedHelp =
     "Historical average: bytes fetched divided by summed successful fetch durations over the selected window. Durations include connection-pool wait and overlap across concurrent fetches, so this is not wall-clock aggregate bandwidth. Use the provider benchmark for line-rate calibration.";
@@ -19,35 +25,52 @@ export function ProviderScoreboard({ providers, window }: ProviderScoreboardProp
   return (
     <section className="card w-full min-w-0 border border-base-content/10 bg-base-100 shadow-sm">
       <div className="card-body gap-3 p-4">
-        <div>
-          <h3 className="card-title text-base">Providers</h3>
-          <p className="text-xs text-base-content/50">
-            Per-provider fetches, {window === "all" ? "all time" : `last ${window}`}
-          </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="card-title text-base">Providers</h3>
+            <p className="text-xs text-base-content/50">
+              Per-provider fetches, {window === "all" ? "all time" : `last ${window}`}
+            </p>
+          </div>
+          <div className="card-actions m-0">
+            <WidgetLink to={settingsPath("usenet")}>Usenet settings</WidgetLink>
+          </div>
         </div>
+        {hasOpenCircuit && (
+          <p className="text-xs text-warning">
+            A provider circuit is open or recovering.{" "}
+            <WidgetLink to={settingsPath("usenet")}>Review Usenet settings</WidgetLink>
+          </p>
+        )}
 
         {providers.length === 0 ? (
           <p className="py-6 text-center text-xs text-base-content/50">No providers configured.</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="table table-sm min-w-[800px]">
+            <table className="table table-pin-cols table-sm min-w-[800px]">
               <thead>
                 <tr>
                   <th>Provider</th>
                   <th className="w-[120px]">Activity</th>
-                  <th className="w-[120px]" title={outageHelp}>
-                    Outages
+                  <th className="w-[120px]">
+                    <Tooltip content={outageHelp}>
+                      <span>Outages</span>
+                    </Tooltip>
                   </th>
                   <th>Articles</th>
                   <th>Read</th>
                   <th>Share</th>
-                  <th className="w-[120px]" title={speedHelp}>
-                    MB/s
+                  <th className="w-[120px]">
+                    <Tooltip content={speedHelp}>
+                      <span>MB/s</span>
+                    </Tooltip>
                   </th>
                   <th className="w-[120px]">Errors</th>
                   <th className="w-[120px]">Retries</th>
-                  <th title="Mean duration of successful fetches only. Includes connection-pool wait inside the provider call — not pure wire RTT. Misses and errors are excluded.">
-                    Avg ok ms
+                  <th>
+                    <Tooltip content="Mean duration of successful fetches only. Includes connection-pool wait inside the provider call — not pure wire RTT. Misses and errors are excluded.">
+                      <span>Avg ok ms</span>
+                    </Tooltip>
                   </th>
                 </tr>
               </thead>
@@ -57,42 +80,47 @@ export function ProviderScoreboard({ providers, window }: ProviderScoreboardProp
                   const circuitState = p.circuitState ?? "closed";
                   return (
                     <tr key={p.provider}>
-                      <td>
-                        <div
-                          className="flex max-w-[240px] min-w-0 items-center gap-2 font-medium"
-                          title={buildProviderTooltip(p, circuitState)}
-                        >
-                          <span
-                            className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass(circuitState)}`}
-                          />
-                          <span className="min-w-0 truncate">
-                            {p.nickname?.trim() || p.provider}
-                          </span>
-                          {circuitState !== "closed" && (
-                            <span className={`badge badge-sm shrink-0 ${badgeClass(circuitState)}`}>
-                              {circuitLabel(circuitState, p.cooldownRemainingSeconds)}
+                      <th scope="row" className="bg-base-100 font-medium">
+                        <Tooltip content={buildProviderTooltip(p, circuitState)}>
+                          <div className="flex max-w-[240px] min-w-0 items-center gap-2 font-medium">
+                            <span
+                              className={`status status-xs shrink-0 ${statusClass(circuitState)}`}
+                            />
+                            <span className="min-w-0 truncate">
+                              {p.nickname?.trim() || p.provider}
                             </span>
-                          )}
-                        </div>
-                      </td>
+                            {circuitState !== "closed" && (
+                              <span
+                                className={`badge badge-sm shrink-0 ${badgeClass(circuitState)}`}
+                              >
+                                {circuitLabel(circuitState, p.cooldownRemainingSeconds)}
+                              </span>
+                            )}
+                          </div>
+                        </Tooltip>
+                      </th>
                       <td>
                         <Sparkline values={p.spark} tone="success" />
                       </td>
-                      <td title={outageHelp}>
-                        <OutageBuckets values={p.outageSpark ?? []} />
+                      <td>
+                        <Tooltip content={outageHelp}>
+                          <OutageBuckets values={p.outageSpark ?? []} />
+                        </Tooltip>
                       </td>
                       <td className="font-mono tabular-nums">{formatNumber(p.articles)}</td>
                       <td className="font-mono tabular-nums">{formatBytes(p.bytesFetched)}</td>
                       <td>
                         <ShareBar share={share} />
                       </td>
-                      <td title={speedHelp}>
-                        <div className="flex flex-col gap-0.5">
-                          <Sparkline values={p.speedSpark ?? []} tone="success" />
-                          <div className="font-mono text-[11px] tabular-nums text-base-content/60">
-                            {formatSpeed(p.speedMbPerSec)}
+                      <td>
+                        <Tooltip content={speedHelp}>
+                          <div className="flex flex-col gap-0.5">
+                            <Sparkline values={p.speedSpark ?? []} tone="success" />
+                            <div className="font-mono text-[11px] tabular-nums text-base-content/60">
+                              {formatSpeed(p.speedMbPerSec)}
+                            </div>
                           </div>
-                        </div>
+                        </Tooltip>
                       </td>
                       <td>
                         <div className="flex flex-col gap-0.5">
@@ -120,11 +148,10 @@ export function ProviderScoreboard({ providers, window }: ProviderScoreboardProp
                           </div>
                         </div>
                       </td>
-                      <td
-                        className="font-mono tabular-nums"
-                        title="Successful fetches only (includes pool wait)"
-                      >
-                        {p.avgDurationMs.toFixed(0)}
+                      <td className="font-mono tabular-nums">
+                        <Tooltip content="Successful fetches only (includes pool wait)">
+                          <span>{p.avgDurationMs.toFixed(0)}</span>
+                        </Tooltip>
                       </td>
                     </tr>
                   );
@@ -138,14 +165,14 @@ export function ProviderScoreboard({ providers, window }: ProviderScoreboardProp
   );
 }
 
-function dotClass(state: ProviderCircuitState) {
+function statusClass(state: ProviderCircuitState) {
   switch (state) {
     case "open":
-      return "bg-error";
+      return "status-error";
     case "halfOpen":
-      return "bg-warning";
+      return "status-warning";
     default:
-      return "bg-success";
+      return "status-success";
   }
 }
 
@@ -192,14 +219,14 @@ function buildProviderTooltip(p: ProviderRow, state: ProviderCircuitState) {
 
 function ShareBar({ share }: { share: number }) {
   return (
-    <div className="relative h-4 w-20 overflow-hidden rounded bg-base-200">
-      <div
-        className="absolute inset-0 bg-success opacity-25"
-        style={{ width: `${share.toFixed(1)}%` }}
+    <div className="flex items-center gap-2">
+      <progress
+        className="progress progress-success w-20"
+        value={share}
+        max={100}
+        aria-label={`Article share: ${formatPercent(share, 0)}`}
       />
-      <span className="relative block px-1.5 text-center text-[11px] leading-4 text-base-content tabular-nums">
-        {formatPercent(share, 0)}
-      </span>
+      <span className="font-mono text-[11px] tabular-nums">{formatPercent(share, 0)}</span>
     </div>
   );
 }

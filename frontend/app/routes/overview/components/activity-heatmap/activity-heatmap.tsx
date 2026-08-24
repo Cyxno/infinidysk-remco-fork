@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import styles from "./activity-heatmap.module.css";
 import type { HeatmapCell, HeatmapMode } from "~/clients/backend-client.server";
 import { formatNumber } from "../../utils/format";
+import { Tooltip } from "~/components/ui";
 
 export type ActivityHeatmapProps = {
   maxCell: number;
@@ -57,12 +58,25 @@ export function ActivityHeatmap({
   bucketSizeMs,
   cells,
 }: ActivityHeatmapProps) {
-  const [hover, setHover] = useState<GridCell | null>(null);
+  const [hoverBucket, setHoverBucket] = useState<number | null>(null);
+  const [selectedBucket, setSelectedBucket] = useState<number | null>(null);
 
   const grid = useMemo(
     () => buildGrid(mode, windowStartMs, windowEndMs, cells),
     [mode, windowStartMs, windowEndMs, cells],
   );
+  const cellByBucket = useMemo(() => {
+    const map = new Map<number, GridCell>();
+    for (const row of grid.rows) {
+      for (const cell of row.cells) {
+        if (cell.inRange) map.set(cell.bucket, cell);
+      }
+    }
+    return map;
+  }, [grid]);
+  const hover = hoverBucket === null ? null : (cellByBucket.get(hoverBucket) ?? null);
+  const selected = selectedBucket === null ? null : (cellByBucket.get(selectedBucket) ?? null);
+  const shown = hover ?? selected;
 
   const total = useMemo(() => cells.reduce((s, c) => s + c.count, 0), [cells]);
   const empty = total === 0;
@@ -107,12 +121,11 @@ export function ActivityHeatmap({
             <div className={styles.grid} data-mode={mode}>
               {grid.rows.map((row, r) => (
                 <div key={r} className={styles.row}>
-                  <div
-                    className="w-[30px] shrink-0 text-right text-[11px] font-medium text-base-content/50 select-none"
-                    title={row.title}
-                  >
-                    {row.label}
-                  </div>
+                  <Tooltip content={row.title ?? row.label}>
+                    <div className="w-[30px] shrink-0 text-right text-[11px] font-medium text-base-content/50 select-none">
+                      {row.label}
+                    </div>
+                  </Tooltip>
                   <div
                     className={styles.cellRow}
                     style={{ gridTemplateColumns: `repeat(${grid.cols}, minmax(0, 1fr))` }}
@@ -123,14 +136,18 @@ export function ActivityHeatmap({
                       }
                       const intensity = maxCell > 0 ? cell.count / maxCell : 0;
                       return (
-                        <div
+                        <button
+                          type="button"
                           key={c}
-                          className={styles.cell}
+                          aria-label={`${formatBucket(cell.bucket, bucketSizeMs)}: ${formatNumber(cell.count)} ${cell.count === 1 ? "article" : "articles"}`}
+                          data-tip={`${formatBucket(cell.bucket, bucketSizeMs)}: ${formatNumber(cell.count)} ${cell.count === 1 ? "article" : "articles"}`}
+                          className={`tooltip ${styles.cell}`}
                           style={{ backgroundColor: cellColor(intensity) }}
-                          onMouseEnter={() => setHover(cell)}
-                          onMouseLeave={() =>
-                            setHover((h) => (h && h.bucket === cell.bucket ? null : h))
-                          }
+                          onMouseEnter={() => setHoverBucket(cell.bucket)}
+                          onMouseLeave={() => setHoverBucket((h) => (h === cell.bucket ? null : h))}
+                          onFocus={() => setHoverBucket(cell.bucket)}
+                          onBlur={() => setHoverBucket((h) => (h === cell.bucket ? null : h))}
+                          onClick={() => setSelectedBucket(cell.bucket)}
                         />
                       );
                     })}
@@ -160,13 +177,13 @@ export function ActivityHeatmap({
 
             <div className="mt-3 flex flex-wrap items-center justify-between gap-4">
               <div className="text-[11px] text-base-content/50 tabular-nums">
-                {hover ? (
+                {shown ? (
                   <>
-                    {formatBucket(hover.bucket, bucketSizeMs)} &mdash; {formatNumber(hover.count)}{" "}
-                    {hover.count === 1 ? "article" : "articles"}
+                    {formatBucket(shown.bucket, bucketSizeMs)} &mdash; {formatNumber(shown.count)}{" "}
+                    {shown.count === 1 ? "article" : "articles"}
                   </>
                 ) : (
-                  <>Hover a cell for details</>
+                  <>Select a cell for details</>
                 )}
               </div>
               <div className="flex items-center gap-1 text-[10px] text-base-content/50">

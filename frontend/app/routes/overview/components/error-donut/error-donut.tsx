@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import styles from "./error-donut.module.css";
 import type { ErrorSlice } from "~/clients/backend-client.server";
 import { formatNumber, formatPercent } from "../../utils/format";
+import { Tooltip } from "~/components/ui";
+import { WidgetLink } from "../widget-link/widget-link";
 
 export type ErrorDonutProps = {
   errors: ErrorSlice[];
@@ -65,14 +67,23 @@ export function ErrorBreakdown({ errors }: ErrorDonutProps) {
   return (
     <section className="card w-full min-w-0 overflow-hidden border border-base-content/10 bg-base-100 shadow-sm">
       <div className="card-body gap-3 p-4">
-        <div>
-          <h3 className="card-title text-base">Error breakdown</h3>
-          <p className="text-xs text-base-content/50">Hard failures vs expected provider misses</p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="card-title text-base">Error breakdown</h3>
+            <p className="text-xs text-base-content/50">
+              Hard failures vs expected provider misses
+            </p>
+          </div>
+          {hardTotal > 0 && (
+            <div className="card-actions m-0">
+              <WidgetLink to="/logs">View logs</WidgetLink>
+            </div>
+          )}
         </div>
 
         {allClear ? (
           <div className="flex items-center gap-3 px-3 pt-4 pb-2">
-            <div className="h-3 w-3 shrink-0 rounded-full bg-success" />
+            <span className="status status-success" />
             <div>
               <div className="text-sm font-semibold text-base-content">All clear</div>
               <div className="mt-0.5 text-xs text-base-content/50">
@@ -112,16 +123,19 @@ export function ErrorBreakdown({ errors }: ErrorDonutProps) {
                   aria-label={`${hardTotal} hard fetch errors broken down by type`}
                 >
                   {hardSegments.map((s) => (
-                    <div
+                    <Tooltip
                       key={s.status}
-                      className={`${styles.stackSeg} ${hover && hover !== s.status ? styles.stackSegDim : ""}`}
-                      style={{
-                        flex: s.count,
-                        background: s.color,
-                      }}
-                      onMouseEnter={() => setHover(s.status)}
-                      title={`${statusLabel(s.status)}: ${formatNumber(s.count)} (${formatPercent(s.fraction * 100, 1)})`}
-                    />
+                      content={`${statusLabel(s.status)}: ${formatNumber(s.count)} (${formatPercent(s.fraction * 100, 1)})`}
+                    >
+                      <div
+                        className={`${styles.stackSeg} ${hover && hover !== s.status ? styles.stackSegDim : ""}`}
+                        style={{
+                          flex: s.count,
+                          background: s.color,
+                        }}
+                        onMouseEnter={() => setHover(s.status)}
+                      />
+                    </Tooltip>
                   ))}
                 </div>
 

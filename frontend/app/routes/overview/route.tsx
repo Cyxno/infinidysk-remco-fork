@@ -1,6 +1,14 @@
 import { withUrlBase } from "~/utils/url-base";
 import type { Route } from "./+types/route";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { useWebsocketTopics } from "~/utils/shared-websocket";
 import {
   DndContext,
@@ -33,6 +41,8 @@ import { RecordsBlock } from "./components/records-block/records-block";
 import { FailoverSaves } from "./components/failover-saves/failover-saves";
 import { ArrHealth } from "./components/arr-health/arr-health";
 import { SortableRow } from "./components/sortable-row/sortable-row";
+import { SectionLoadError } from "./components/section-load-error/section-load-error";
+import { Icon, Tooltip } from "~/components/ui";
 import { backendClient, type ArrHealthResponse } from "~/clients/backend-client.server";
 import { useRowOrder } from "./utils/use-row-order";
 import { hasConfiguredIndexers } from "./utils/has-configured-indexers";
@@ -119,19 +129,54 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
   const [staticLoaded, setStaticLoaded] = useState(false);
   const [arrHealth, setArrHealth] = useState<ArrHealthResponse | null>(null);
   const [arrHealthLoaded, setArrHealthLoaded] = useState(false);
+  const [windowError, setWindowError] = useState(false);
+  const [detailError, setDetailError] = useState(false);
+  const [staticError, setStaticError] = useState(false);
+  const [arrHealthError, setArrHealthError] = useState(false);
+  const [windowRetry, setWindowRetry] = useState(0);
+  const [detailRetry, setDetailRetry] = useState(0);
+  const [staticRetry, setStaticRetry] = useState(0);
+  const [arrHealthRetry, setArrHealthRetry] = useState(0);
   const { order, save, reset } = useRowOrder(DEFAULT_ROW_ORDER);
   const editModeRef = useRef(editMode);
   editModeRef.current = editMode;
+  const windowLoadedRef = useRef(false);
+  const detailLoadedRef = useRef(false);
+  const staticLoadedRef = useRef(false);
+  const arrHealthLoadedRef = useRef(false);
+  windowLoadedRef.current = windowLoaded;
+  detailLoadedRef.current = detailLoaded;
+  staticLoadedRef.current = staticLoaded;
+  arrHealthLoadedRef.current = arrHealthLoaded;
 
   const liveTiles = stats.tiles;
   const isLongWindow = window === "7d" || window === "30d" || window === "all";
 
+  const applyWindow = (next: OverviewWindow) => {
+    if (next === window) return;
+    const nextLong = next === "7d" || next === "30d" || next === "all";
+    setWindow(next);
+    if (nextLong) {
+      setDetailLoaded(true);
+      setDetailError(false);
+      detailLoadedRef.current = true;
+    } else {
+      setDetailLoaded(false);
+      setDetailError(false);
+      detailLoadedRef.current = false;
+    }
+  };
+
   // Window section: load on mount / window change, poll every 30s while visible.
   useEffect(() => {
     let cancelled = false;
+    windowLoadedRef.current = false;
     setWindowLoaded(false);
-    if (isLongWindow) setDetailLoaded(true);
-    else setDetailLoaded(false);
+    setWindowError(false);
+    if (isLongWindow) {
+      setDetailLoaded(true);
+      setDetailError(false);
+    } else setDetailLoaded(false);
 
     const fetchWindow = async () => {
       if (typeof document !== "undefined" && document.hidden) return;
@@ -139,14 +184,19 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
         const res = await fetch(
           withUrlBase(`/api/get-overview-stats?window=${window}&sections=window`),
         );
-        if (!res.ok || cancelled) return;
+        if (cancelled) return;
+        if (!res.ok) {
+          if (!windowLoadedRef.current) setWindowError(true);
+          return;
+        }
         // /api/get-overview-stats returns OverviewStatsResponse
         const data = (await res.json()) as OverviewStatsResponse;
         if (cancelled) return;
         setStats((s) => mergeOverviewStats(s, data));
         setWindowLoaded(true);
+        setWindowError(false);
       } catch {
-        /* network blip, retry next tick */
+        if (!cancelled && !windowLoadedRef.current) setWindowError(true);
       }
     };
 
@@ -165,25 +215,32 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [window, isLongWindow]);
+  }, [window, isLongWindow, windowRetry]);
 
   // Arr Health: poll on the same 30s cadence, only when Arr instances are configured.
   useEffect(() => {
     if (!loaderData.hasConfiguredArrs) return;
     let cancelled = false;
+    arrHealthLoadedRef.current = false;
     setArrHealthLoaded(false);
+    setArrHealthError(false);
 
     const fetchArrHealth = async () => {
       if (typeof document !== "undefined" && document.hidden) return;
       try {
         const res = await fetch(withUrlBase(`/api/get-arr-health?window=${window}`));
-        if (!res.ok || cancelled) return;
+        if (cancelled) return;
+        if (!res.ok) {
+          if (!arrHealthLoadedRef.current) setArrHealthError(true);
+          return;
+        }
         const data = (await res.json()) as ArrHealthResponse;
         if (cancelled) return;
         setArrHealth(data);
         setArrHealthLoaded(true);
+        setArrHealthError(false);
       } catch {
-        /* network blip, retry next tick */
+        if (!cancelled && !arrHealthLoadedRef.current) setArrHealthError(true);
       }
     };
 
@@ -202,31 +259,39 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [window, loaderData.hasConfiguredArrs]);
+  }, [window, loaderData.hasConfiguredArrs, arrHealthRetry]);
 
   // Detail (latency + errors): once per 24h window selection — not on the 30s poll.
   useEffect(() => {
     if (isLongWindow) return;
     let cancelled = false;
+    detailLoadedRef.current = false;
+    setDetailLoaded(false);
+    setDetailError(false);
     void (async () => {
       try {
         const res = await fetch(
           withUrlBase(`/api/get-overview-stats?window=${window}&sections=detail`),
         );
-        if (!res.ok || cancelled) return;
+        if (cancelled) return;
+        if (!res.ok) {
+          if (!detailLoadedRef.current) setDetailError(true);
+          return;
+        }
         // /api/get-overview-stats returns OverviewStatsResponse
         const data = (await res.json()) as OverviewStatsResponse;
         if (cancelled) return;
         setStats((s) => mergeOverviewStats(s, data));
         setDetailLoaded(true);
+        setDetailError(false);
       } catch {
-        /* ignore */
+        if (!cancelled && !detailLoadedRef.current) setDetailError(true);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [window, isLongWindow]);
+  }, [window, isLongWindow, detailRetry]);
 
   // Static blocks: once per page visit.
   useEffect(() => {
@@ -236,20 +301,25 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
         const res = await fetch(
           withUrlBase(`/api/get-overview-stats?window=${window}&sections=static`),
         );
-        if (!res.ok || cancelled) return;
+        if (cancelled) return;
+        if (!res.ok) {
+          if (!staticLoadedRef.current) setStaticError(true);
+          return;
+        }
         // /api/get-overview-stats returns OverviewStatsResponse
         const data = (await res.json()) as OverviewStatsResponse;
         if (cancelled) return;
         setStats((s) => mergeOverviewStats(s, data));
         setStaticLoaded(true);
+        setStaticError(false);
       } catch {
-        /* ignore */
+        if (!cancelled && !staticLoadedRef.current) setStaticError(true);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- once per visit
+  }, [staticRetry]); // eslint-disable-line react-hooks/exhaustive-deps -- once per visit unless retried
 
   const onWsMessage = useCallback((topic: string, message: string) => {
     if (topic !== topicNames.liveStats) return;
@@ -300,33 +370,41 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
   const rowContent = useMemo<Record<string, ReactNode>>(
     () => ({
       liveTiles: <LiveTiles tiles={liveTiles} />,
-      throughput: windowLoaded ? (
-        <ThroughputChart
-          points={stats.throughput}
-          totalArticles={stats.totalArticles}
-          totalMisses={stats.totalMisses}
-          totalErrors={stats.totalErrors}
-          totalBytesServed={stats.sessions.totalBytesServed}
-          bucketSizeMs={stats.throughputBucketSizeMs}
-          window={window}
-        />
-      ) : (
-        <Skeleton height={180} />
-      ),
-      activity: windowLoaded ? (
-        <ActivityHeatmap
-          maxCell={stats.heatmap.maxCell}
-          mode={stats.heatmap.mode}
-          windowStartMs={stats.heatmap.windowStartMs}
-          windowEndMs={stats.heatmap.windowEndMs}
-          bucketSizeMs={stats.heatmap.bucketSizeMs}
-          cells={stats.heatmap.cells}
-        />
-      ) : (
-        <Skeleton height={140} />
-      ),
+      throughput:
+        windowError && !windowLoaded ? (
+          <SectionLoadError label="activity" onRetry={() => setWindowRetry((n) => n + 1)} />
+        ) : windowLoaded ? (
+          <ThroughputChart
+            points={stats.throughput}
+            totalArticles={stats.totalArticles}
+            totalMisses={stats.totalMisses}
+            totalErrors={stats.totalErrors}
+            totalBytesServed={stats.sessions.totalBytesServed}
+            bucketSizeMs={stats.throughputBucketSizeMs}
+            window={window}
+          />
+        ) : (
+          <Skeleton height={180} />
+        ),
+      activity:
+        windowError && !windowLoaded ? (
+          <SectionLoadError label="activity heatmap" onRetry={() => setWindowRetry((n) => n + 1)} />
+        ) : windowLoaded ? (
+          <ActivityHeatmap
+            maxCell={stats.heatmap.maxCell}
+            mode={stats.heatmap.mode}
+            windowStartMs={stats.heatmap.windowStartMs}
+            windowEndMs={stats.heatmap.windowEndMs}
+            bucketSizeMs={stats.heatmap.bucketSizeMs}
+            cells={stats.heatmap.cells}
+          />
+        ) : (
+          <Skeleton height={140} />
+        ),
       latency: !isLongWindow ? (
-        detailLoaded ? (
+        detailError && !detailLoaded ? (
+          <SectionLoadError label="fetch latency" onRetry={() => setDetailRetry((n) => n + 1)} />
+        ) : detailLoaded ? (
           <LatencyHistogram
             p50Ms={stats.latency.p50Ms}
             p95Ms={stats.latency.p95Ms}
@@ -338,61 +416,99 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
           <Skeleton height={160} />
         )
       ) : null,
-      errorsSessions: (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {!isLongWindow &&
-            (detailLoaded ? <ErrorDonut errors={stats.errors} /> : <Skeleton height={160} />)}
-          {windowLoaded ? (
+      errorsSessions: (() => {
+        const sessions =
+          windowError && !windowLoaded ? (
+            <SectionLoadError label="read sessions" onRetry={() => setWindowRetry((n) => n + 1)} />
+          ) : windowLoaded ? (
             <SessionsBlock sessions={stats.sessions} window={window} />
           ) : (
             <Skeleton height={160} />
-          )}
-        </div>
-      ),
-      providers: windowLoaded ? (
-        <ProviderScoreboard providers={stats.providers} window={window} />
-      ) : (
-        <Skeleton height={160} />
-      ),
-      failover: windowLoaded ? (
-        <FailoverSaves failover={stats.failover} window={window} />
-      ) : (
-        <Skeleton height={180} />
-      ),
+          );
+        if (isLongWindow) return sessions;
+        const errors =
+          detailError && !detailLoaded ? (
+            <SectionLoadError
+              label="error breakdown"
+              onRetry={() => setDetailRetry((n) => n + 1)}
+            />
+          ) : detailLoaded ? (
+            <ErrorDonut errors={stats.errors} />
+          ) : (
+            <Skeleton height={160} />
+          );
+        return (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {errors}
+            {sessions}
+          </div>
+        );
+      })(),
+      providers:
+        windowError && !windowLoaded ? (
+          <SectionLoadError label="providers" onRetry={() => setWindowRetry((n) => n + 1)} />
+        ) : windowLoaded ? (
+          <ProviderScoreboard providers={stats.providers} window={window} />
+        ) : (
+          <Skeleton height={160} />
+        ),
+      failover:
+        windowError && !windowLoaded ? (
+          <SectionLoadError label="backup rescues" onRetry={() => setWindowRetry((n) => n + 1)} />
+        ) : windowLoaded ? (
+          <FailoverSaves failover={stats.failover} window={window} />
+        ) : (
+          <Skeleton height={180} />
+        ),
       arrHealth: loaderData.hasConfiguredArrs ? (
-        arrHealthLoaded && arrHealth ? (
+        arrHealthError && !arrHealthLoaded ? (
+          <SectionLoadError label="Arr health" onRetry={() => setArrHealthRetry((n) => n + 1)} />
+        ) : arrHealthLoaded && arrHealth ? (
           <ArrHealth data={arrHealth} window={window} />
         ) : (
           <Skeleton height={140} />
         )
       ) : null,
       indexers:
-        loaderData.hasConfiguredIndexers && staticLoaded ? (
+        loaderData.hasConfiguredIndexers && staticError && !staticLoaded ? (
+          <SectionLoadError label="indexers" onRetry={() => setStaticRetry((n) => n + 1)} />
+        ) : loaderData.hasConfiguredIndexers && staticLoaded ? (
           <IndexerScoreboard indexers={stats.indexers} />
         ) : loaderData.hasConfiguredIndexers ? (
           <Skeleton height={140} />
         ) : null,
       indexerApiUsage:
-        loaderData.hasConfiguredIndexers && staticLoaded ? (
+        loaderData.hasConfiguredIndexers && staticError && !staticLoaded ? (
+          <SectionLoadError
+            label="indexer API usage"
+            onRetry={() => setStaticRetry((n) => n + 1)}
+          />
+        ) : loaderData.hasConfiguredIndexers && staticLoaded ? (
           <IndexerApiUsage rows={stats.indexerApiUsage} />
         ) : loaderData.hasConfiguredIndexers ? (
           <Skeleton height={120} />
         ) : null,
-      recordsCatalogue: (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {staticLoaded ? <RecordsBlock records={stats.records} /> : <Skeleton height={120} />}
-          {staticLoaded ? (
-            <CatalogueBlock catalogue={stats.catalogue} />
-          ) : (
-            <Skeleton height={120} />
-          )}
-        </div>
-      ),
-      lifetime: staticLoaded ? (
-        <LifetimeBlock lifetime={stats.lifetime} />
-      ) : (
-        <Skeleton height={120} />
-      ),
+      recordsCatalogue:
+        staticError && !staticLoaded ? (
+          <SectionLoadError label="library stats" onRetry={() => setStaticRetry((n) => n + 1)} />
+        ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {staticLoaded ? <RecordsBlock records={stats.records} /> : <Skeleton height={120} />}
+            {staticLoaded ? (
+              <CatalogueBlock catalogue={stats.catalogue} />
+            ) : (
+              <Skeleton height={120} />
+            )}
+          </div>
+        ),
+      lifetime:
+        staticError && !staticLoaded ? (
+          <SectionLoadError label="lifetime totals" onRetry={() => setStaticRetry((n) => n + 1)} />
+        ) : staticLoaded ? (
+          <LifetimeBlock lifetime={stats.lifetime} />
+        ) : (
+          <Skeleton height={120} />
+        ),
     }),
     [
       liveTiles,
@@ -400,12 +516,16 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
       window,
       isLongWindow,
       windowLoaded,
+      windowError,
       detailLoaded,
+      detailError,
       staticLoaded,
+      staticError,
       loaderData.hasConfiguredIndexers,
       loaderData.hasConfiguredArrs,
       arrHealth,
       arrHealthLoaded,
+      arrHealthError,
     ],
   );
 
@@ -434,39 +554,70 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
     save(arrayMove(order, oldIndex, newIndex));
   };
 
+  const onWindowKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const keys = ["ArrowRight", "ArrowLeft", "Home", "End", "ArrowDown", "ArrowUp"];
+    if (!keys.includes(event.key)) return;
+    event.preventDefault();
+    const idx = WINDOWS.findIndex((w) => w.value === window);
+    const last = WINDOWS.length - 1;
+    let next = idx < 0 ? 0 : idx;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") next = idx === last ? 0 : idx + 1;
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = idx <= 0 ? last : idx - 1;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = last;
+    const selected = WINDOWS[next];
+    if (!selected) return;
+    applyWindow(selected.value);
+    document.getElementById(`overview-window-${selected.value}`)?.focus();
+  };
+
   return (
-    <div className="mx-auto flex w-full max-w-[1680px] flex-col gap-4 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="m-0 text-xl font-semibold tracking-tight text-base-content">Overview</h2>
+    <div className="mx-auto flex w-full max-w-[1680px] flex-col gap-6 px-4 py-4 md:gap-8 md:px-8">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="m-0 text-4xl font-bold tracking-tight text-base-content">Overview</h1>
+          {(window === "7d" || window === "30d" || window === "all") && (
+            <p className="mt-1 text-xs text-base-content/50">
+              Latency and error breakdown are available for the 1h and 24h windows.
+            </p>
+          )}
+        </div>
         <div className="inline-flex flex-wrap items-center gap-2">
           {editMode && (
+            <Tooltip content="Restore default order">
+              <button type="button" className="btn btn-ghost btn-sm" onClick={reset}>
+                Reset
+              </button>
+            </Tooltip>
+          )}
+          <Tooltip content={editMode ? "Done editing layout" : "Reorder widgets"}>
             <button
               type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={reset}
-              title="Restore default order"
+              className={`btn btn-sm ${editMode ? "btn-primary" : "btn-ghost"}`}
+              onClick={() => setEditMode((v) => !v)}
+              aria-pressed={editMode}
             >
-              Reset
+              <Icon name={editMode ? "check" : "tune"} className="!text-[18px]" />
+              {editMode ? "Done" : "Edit layout"}
             </button>
-          )}
-          <button
-            type="button"
-            className={`btn btn-sm ${editMode ? "btn-primary" : "btn-ghost"}`}
-            onClick={() => setEditMode((v) => !v)}
-            aria-pressed={editMode}
-            title={editMode ? "Done editing layout" : "Reorder widgets"}
+          </Tooltip>
+          <div
+            role="tablist"
+            className="tabs tabs-border tabs-sm"
+            aria-label="Time window"
+            onKeyDown={onWindowKeyDown}
           >
-            {editMode ? "Done" : "Edit layout"}
-          </button>
-          <div className="join">
             {WINDOWS.map((w) => (
               <button
                 key={w.value}
+                id={`overview-window-${w.value}`}
                 type="button"
                 role="tab"
                 aria-selected={window === w.value}
-                className={`btn btn-sm join-item ${window === w.value ? "btn-primary" : "btn-ghost"}`}
-                onClick={() => setWindow(w.value)}
+                aria-controls="overview-dashboard"
+                tabIndex={window === w.value ? 0 : -1}
+                className={`tab ${window === w.value ? "tab-active" : ""}`}
+                onClick={() => applyWindow(w.value)}
               >
                 {w.label}
               </button>
@@ -488,8 +639,14 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
         </div>
       )}
 
-      <div className="flex min-w-0 flex-col items-stretch gap-4 xl:flex-row">
-        <div className="flex min-w-0 flex-1 flex-col gap-4">
+      <div
+        id="overview-dashboard"
+        className="grid min-w-0 grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]"
+      >
+        <aside className="flex w-full min-w-0 xl:col-start-2 xl:row-start-1 xl:sticky xl:top-4 xl:max-h-[calc(100vh-2rem)]">
+          <LiveReadsPanel paused={editMode} />
+        </aside>
+        <div className="flex min-w-0 flex-col gap-4 xl:col-start-1 xl:row-start-1">
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
             <SortableContext items={visibleOrder} strategy={verticalListSortingStrategy}>
               {visibleOrder.map((id) => {
@@ -504,10 +661,6 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
             </SortableContext>
           </DndContext>
         </div>
-        {/* Pin above widgets when stacked; restore document order for the xl right rail. */}
-        <aside className="order-first flex w-full shrink-0 xl:order-none xl:w-80 xl:self-stretch">
-          <LiveReadsPanel paused={editMode} />
-        </aside>
       </div>
     </div>
   );

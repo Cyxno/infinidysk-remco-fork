@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import styles from "./throughput-chart.module.css";
 import type { OverviewWindow, ThroughputPoint } from "~/clients/backend-client.server";
 import { formatBytes, formatNumber } from "../../utils/format";
@@ -27,9 +27,18 @@ export function ThroughputChart({
   bucketSizeMs,
   window,
 }: ThroughputChartProps) {
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const [hoverBucket, setHoverBucket] = useState<number | null>(null);
+  const [keyboardBucket, setKeyboardBucket] = useState<number | null>(null);
 
   const bucketSeconds = Math.max(1, (bucketSizeMs || 60_000) / 1000);
+  const hoverIdx = indexOfBucket(points, hoverBucket);
+  const keyboardIdx = indexOfBucket(points, keyboardBucket);
+  const cursorIdx = hoverIdx ?? keyboardIdx;
+
+  useEffect(() => {
+    setHoverBucket(null);
+    setKeyboardBucket(null);
+  }, [window]);
 
   const { articlesPath, errorsPath, maxArticles, maxNetworkRate, xPercent, yPercent } =
     useMemo(() => {
@@ -84,14 +93,41 @@ export function ThroughputChart({
       const rect = target.getBoundingClientRect();
       const rel = (clientX - rect.left) / rect.width;
       const idx = Math.round(rel * (points.length - 1));
-      setHoverIdx(Math.max(0, Math.min(points.length - 1, idx)));
+      const clamped = Math.max(0, Math.min(points.length - 1, idx));
+      setHoverBucket(points[clamped]?.bucket ?? null);
     },
-    [points.length],
+    [points],
   );
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) =>
     onMove(e.clientX, e.currentTarget);
-  const handleMouseLeave = () => setHoverIdx(null);
+  const handleMouseLeave = () => setHoverBucket(null);
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (points.length === 0) return;
+    const from = keyboardIdx ?? hoverIdx;
+    let next: number | null;
+    if (e.key === "ArrowRight") {
+      e.preventDefault();
+      next = Math.min(points.length - 1, (from ?? -1) + 1);
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      next = Math.max(0, (from ?? points.length) - 1);
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      next = 0;
+    } else if (e.key === "End") {
+      e.preventDefault();
+      next = points.length - 1;
+    } else if (e.key === "Escape") {
+      setHoverBucket(null);
+      setKeyboardBucket(null);
+      return;
+    } else {
+      return;
+    }
+    setHoverBucket(null);
+    setKeyboardBucket(points[next]?.bucket ?? null);
+  };
   const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
     const t = e.touches[0];
     if (t) onMove(t.clientX, e.currentTarget);
@@ -105,13 +141,17 @@ export function ThroughputChart({
   const hasArticleActivity = maxArticles > 0;
   const bucketLabel =
     window === "1h" || window === "24h" ? "min" : window === "all" ? "day" : "hour";
-  const hover = hoverIdx !== null ? points[hoverIdx] : null;
+  const hover = cursorIdx !== null ? (points[cursorIdx] ?? null) : null;
+  const keyboardPoint = keyboardIdx !== null ? points[keyboardIdx] : undefined;
+  const keyboardStatus = keyboardPoint
+    ? describeThroughputBucket(keyboardPoint, window, bucketSeconds)
+    : "";
   const hoverNetworkRate = hover ? (hover.bytesFetched ?? 0) / bucketSeconds : 0;
   const tooltipPlacement =
-    hoverIdx === null || points.length < 2
+    cursorIdx === null || points.length < 2
       ? "tooltip-top"
       : (() => {
-          const rel = hoverIdx / (points.length - 1);
+          const rel = cursorIdx / (points.length - 1);
           if (rel < 0.2) return "tooltip-right";
           if (rel > 0.8) return "tooltip-left";
           return "tooltip-top";
@@ -149,10 +189,15 @@ export function ThroughputChart({
               </div>
               <div
                 className={styles.chartArea}
+                tabIndex={0}
+                role="img"
+                aria-label={`${formatNumber(totalArticles)} articles, ${formatNumber(totalErrors)} errors, ${formatBytes(totalBytesServed)} served. Use arrow keys for bucket details.`}
+                aria-describedby="overview-throughput-keyboard-status"
                 onMouseMove={handleMouseMove}
                 onMouseLeave={handleMouseLeave}
                 onTouchStart={handleTouchStart}
                 onTouchMove={handleTouchMove}
+                onKeyDown={handleKeyDown}
               >
                 <svg
                   viewBox={`0 0 ${VB_W} ${VB_H}`}
@@ -189,13 +234,13 @@ export function ThroughputChart({
                   )}
                 </svg>
 
-                {hover && hoverIdx !== null && (
+                {hover && cursorIdx !== null && (
                   <>
-                    <div className={styles.crosshair} style={{ left: `${xPercent(hoverIdx)}%` }} />
+                    <div className={styles.crosshair} style={{ left: `${xPercent(cursorIdx)}%` }} />
                     <div
                       className={`tooltip tooltip-open ${tooltipPlacement} ${styles.hoverTooltip}`}
                       style={{
-                        left: `${xPercent(hoverIdx)}%`,
+                        left: `${xPercent(cursorIdx)}%`,
                         top: `${yPercent(hover.articles)}%`,
                       }}
                     >
@@ -225,7 +270,7 @@ export function ThroughputChart({
                       <div
                         className={`${styles.hoverDot} ${styles.hoverDotErr}`}
                         style={{
-                          left: `${xPercent(hoverIdx)}%`,
+                          left: `${xPercent(cursorIdx)}%`,
                           top: `${yPercent(hover.errors)}%`,
                         }}
                       />
@@ -233,6 +278,15 @@ export function ThroughputChart({
                   </>
                 )}
               </div>
+            </div>
+            <div
+              id="overview-throughput-keyboard-status"
+              className="sr-only"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              {keyboardStatus}
             </div>
 
             <div className="relative mt-1.5 ml-[46px] h-4 text-[10px] text-base-content/50 tabular-nums select-none">
@@ -260,7 +314,7 @@ export function ThroughputChart({
                 </span>
               )}
               <span className="ml-auto tabular-nums">
-                Peak {formatNumber(maxArticles)} / {bucketLabel} · hover for details
+                Peak {formatNumber(maxArticles)} / {bucketLabel} · hover or use arrow keys
               </span>
             </div>
           </>
@@ -382,6 +436,29 @@ function Total({
       </div>
     </div>
   );
+}
+
+function indexOfBucket(points: ThroughputPoint[], bucket: number | null): number | null {
+  if (bucket === null) return null;
+  const idx = points.findIndex((p) => p.bucket === bucket);
+  return idx >= 0 ? idx : null;
+}
+
+function describeThroughputBucket(
+  point: ThroughputPoint,
+  window: OverviewWindow,
+  bucketSeconds: number,
+): string {
+  const parts = [
+    formatBucketTime(point.bucket, window),
+    `${formatNumber(point.articles)} articles`,
+  ];
+  const rate = (point.bytesFetched ?? 0) / bucketSeconds;
+  if (rate > 0) parts.push(`${formatBytes(rate)}/s downloaded`);
+  if ((point.misses ?? 0) > 0) parts.push(`${formatNumber(point.misses)} misses`);
+  if (point.errors > 0) parts.push(`${formatNumber(point.errors)} errors`);
+  if (point.bytesServed > 0) parts.push(`${formatBytes(point.bytesServed)} served`);
+  return parts.join(", ");
 }
 
 function formatBucketTime(ms: number, window: OverviewWindow): string {
