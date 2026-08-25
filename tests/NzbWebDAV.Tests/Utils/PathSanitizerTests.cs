@@ -80,6 +80,21 @@ public class PathSanitizerTests
     }
 
     [Fact]
+    public void SanitizeComponent_WhenDisabled_StillTruncatesToComponentLimit()
+    {
+        var stem = new string('a', 300);
+        var result = PathSanitizer.SanitizeComponent(stem + ".mkv", windowsSafe: false);
+        Assert.True(result.Length <= 240);
+        Assert.EndsWith(".mkv", result);
+    }
+
+    [Fact]
+    public void SanitizeComponent_WhenDisabled_TruncationToEmptyBecomesUntitled()
+    {
+        Assert.Equal("untitled", PathSanitizer.SanitizeComponent(new string(' ', 241), windowsSafe: false));
+    }
+
+    [Fact]
     public void GetJobName_SanitizesWindowsInvalidCharacters()
     {
         Assert.Equal("Show_ Title_", FilenameUtil.GetJobName("Show: Title?.nzb"));
