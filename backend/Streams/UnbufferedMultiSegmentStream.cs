@@ -34,6 +34,7 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
     private long _pendingPadBytes;
     private int _consecutiveZeroFills;
     private bool _openSegmentFromLiveFetch;
+    private bool _openSegmentHole;
     private bool _hasProbedByte;
     private byte _probedByte;
     private bool _disposed;
@@ -118,6 +119,8 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
                     continue;
                 }
 
+                ThrowIfPlaybackFailFast();
+
                 Stream? fetched = null;
                 try
                 {
@@ -130,7 +133,7 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
                     fetched = null;
                     _openSegmentIndex = segmentIndex;
                     _openSegmentFromLiveFetch = true;
-                    _consecutiveZeroFills = 0;
+                    _openSegmentHole = false;
                 }
                 catch (UsenetArticleNotFoundException e)
                 {
@@ -142,7 +145,7 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
                         _stream = fallback;
                         _openSegmentIndex = segmentIndex;
                         _openSegmentFromLiveFetch = true;
-                        _consecutiveZeroFills = 0;
+                        _openSegmentHole = false;
                     }
                     else
                     {
@@ -229,14 +232,15 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
             // starts at the offset the rest of the file expects.
             if (TryGetRemainingExactBytes(out remainingExact) && remainingExact > 0)
             {
-                ZeroFillLogLimiter.Write(
-                    "Segment {SegmentId} of {FileName} decoded {Bytes} bytes short of its recorded size. " +
-                    "Filling the gap to keep the rest of the file aligned.",
-                    _segmentIds.Span[_openSegmentIndex],
-                    _fileName,
-                    remainingExact);
-                if (MultiProviderNntpClient.CurrentReadSessionId is { } sessionId)
-                    StreamTrace.TryZeroFill(sessionId, _segmentIds.Span[_openSegmentIndex], remainingExact);
+                var shortId = _segmentIds.Span[_openSegmentIndex];
+                var hole = SegmentHoleReporter.ReportShortDecode(
+                    _fileName, shortId, _openSegmentIndex, remainingExact);
+                _consecutiveZeroFills++;
+                _openSegmentHole = true;
+                var cap = _consecutiveZeroFills >= GapFillLimits.MaxConsecutiveZeroFills;
+                var trackerFail = PlaybackHoleTracker.ShouldFailFast(_fileName, out var failFast);
+                if (cap || trackerFail)
+                    ExceptionDispatchInfo.Capture(failFast ?? hole).Throw();
 
                 _pendingPadBytes = remainingExact;
                 continue;
@@ -281,6 +285,7 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
         string segmentId,
         CancellationToken cancellationToken)
     {
+        ThrowIfPlaybackFailFast();
         var local = await TryGetLocalSegmentAsync(segmentId, segmentIndex, cancellationToken)
             .ConfigureAwait(false)
             ?? await TryGetLocalFallbackAsync(segmentIndex, cancellationToken).ConfigureAwait(false);
@@ -289,7 +294,7 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
             _stream = local;
             _openSegmentIndex = segmentIndex;
             _openSegmentFromLiveFetch = false;
-            _consecutiveZeroFills = 0;
+            _openSegmentHole = false;
             return;
         }
 
@@ -363,9 +368,16 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
         if (_openSegmentIndex >= 0
             && !_segmentSizes.TryGetExactSize(_openSegmentIndex, out _))
             _segmentSizes.RecordObservedSize(_openSegmentIndex, _openSegmentBytes);
+        if (!_openSegmentHole)
+        {
+            _consecutiveZeroFills = 0;
+            PlaybackHoleTracker.RecordGoodSegment(_fileName);
+        }
+
         _openSegmentIndex = -1;
         _pendingPadBytes = 0;
         _openSegmentFromLiveFetch = false;
+        _openSegmentHole = false;
         _hasProbedByte = false;
         await DisposeOpenBodyAsync().ConfigureAwait(false);
     }
@@ -431,7 +443,7 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
             _stream = fallback;
             _openSegmentIndex = segmentIndex;
             _openSegmentFromLiveFetch = true;
-            _consecutiveZeroFills = 0;
+            _openSegmentHole = false;
             return;
         }
 
@@ -543,7 +555,7 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
         _stream = stream;
         _openSegmentIndex = segmentIndex;
         _openSegmentFromLiveFetch = true;
-        _consecutiveZeroFills = 0;
+        _openSegmentHole = false;
     }
 
     private void ApplyZeroFill(
@@ -554,6 +566,8 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
         bool isCorruption)
     {
         _consecutiveZeroFills++;
+        _openSegmentHole = true;
+        PlaybackHoleTracker.RecordHole(_fileName, segmentId, cause);
         var template = isCorruption
             ? "Article {SegmentId} persistently corrupt while reading {FileName}. Filling the {Bytes}-byte gap to preserve later file offsets."
             : "Article {SegmentId} missing on all providers while reading {FileName}. Filling the {Bytes}-byte gap to preserve later file offsets.";
@@ -564,9 +578,11 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
             Par2RepairTriggerSink.ReportCorruption(_fileName, segmentId);
         else
             Par2RepairTriggerSink.Current?.ReportZeroFill(_fileName, segmentId, segmentIndex, fill);
-        if (_consecutiveZeroFills >= GapFillLimits.MaxConsecutiveZeroFills)
+        var cap = _consecutiveZeroFills >= GapFillLimits.MaxConsecutiveZeroFills;
+        var trackerFail = PlaybackHoleTracker.ShouldFailFast(_fileName, out var failFast);
+        if (cap || trackerFail)
         {
-            ExceptionDispatchInfo.Capture(cause).Throw();
+            ExceptionDispatchInfo.Capture(failFast ?? cause).Throw();
             throw cause;
         }
 
@@ -618,6 +634,10 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
             catch (UsenetArticleNotFoundException)
             {
                 await DisposeBodyStreamAsync(fallbackStream).ConfigureAwait(false);
+                // A playback fail-fast raised by FetchBodyAsync must escape instead of
+                // walking every fallback ID and recording an extra hole per attempt.
+                if (PlaybackHoleTracker.ShouldFailFast(_fileName, out var failFast) && failFast is not null)
+                    ExceptionDispatchInfo.Capture(failFast).Throw();
             }
             catch (UsenetCorruptArticleException)
             {
@@ -638,6 +658,7 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
         string segmentId,
         CancellationToken cancellationToken)
     {
+        ThrowIfPlaybackFailFast();
         using (FetchAttributionContext.Begin(_fileName))
         {
             return await _usenetClient.DecodedBodyAsync(segmentId, cancellationToken)
@@ -682,6 +703,14 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
             ArrayPool<byte>.Shared.Return(buffer);
             await DisposeBodyStreamAsync(stream).ConfigureAwait(false);
         }
+    }
+
+    private void ThrowIfPlaybackFailFast()
+    {
+        if (!PlaybackHoleTracker.ShouldFailFast(_fileName, out var exception))
+            return;
+        ExceptionDispatchInfo.Capture(
+            exception ?? new UsenetArticleNotFoundException(_segmentIds.Span[0])).Throw();
     }
 
     private void ThrowIfDisposed()

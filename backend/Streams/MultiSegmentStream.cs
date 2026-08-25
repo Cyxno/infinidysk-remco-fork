@@ -61,6 +61,20 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
             ? 0
             : MaxCorruptionRetries;
 
+    private void ThrowIfPlaybackFailFast()
+    {
+        if (!PlaybackHoleTracker.ShouldFailFast(_fileName, out var exception))
+            return;
+        ExceptionDispatchInfo.Capture(
+            exception ?? new UsenetArticleNotFoundException(_segmentIds.Span[0])).Throw();
+    }
+
+    private SegmentDownloadResult ToDownloadResult(
+        DrainedSegment drained,
+        long estimate,
+        string segmentId) =>
+        SegmentDownloadResult.Success(drained.Stream, estimate, drained.ShortPadded, segmentId);
+
     /// <summary>
     /// Optional per-instance test hook invoked with the segment-boundary readiness sample,
     /// after it is taken and before the segment task is awaited. Production code never sets
@@ -573,6 +587,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         var lease = initialLease;
         try
         {
+            ThrowIfPlaybackFailFast();
             if (_knownMissingSegmentIndices?.Contains(segmentIndex) == true)
             {
                 var result = await DownloadKnownMissingSegment(
@@ -595,12 +610,12 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
 
                     await ThrowOnSegmentIdMismatchAsync(segmentId, bodyResponse).ConfigureAwait(false);
 #pragma warning disable CA2000 // stream ownership transfers to the returned SegmentDownloadResult
-                    var stream = await DrainSegmentAsync(
+                    var drained = await DrainSegmentAsync(
 #pragma warning restore CA2000
                             bodyResponse.Stream!, segmentIndex, cancellationToken, lease, estimate)
                         .ConfigureAwait(false);
                     lease = null;
-                    return SegmentDownloadResult.Success(stream, estimate);
+                    return ToDownloadResult(drained, estimate, segmentId);
                 }
                 catch (UsenetArticleNotFoundException e)
                 {
@@ -610,7 +625,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                     if (fallback is not null)
                     {
                         lease = null;
-                        return SegmentDownloadResult.Success(fallback, estimate);
+                        return ToDownloadResult(fallback.Value, estimate, segmentId);
                     }
 
                     if (_failFastOnFirstSegment && isFirstSegment)
@@ -638,7 +653,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                         if (fallback is not null)
                         {
                             lease = null;
-                            return SegmentDownloadResult.Success(fallback, estimate);
+                            return ToDownloadResult(fallback.Value, estimate, segmentId);
                         }
 
                         if (_failFastOnFirstSegment && isFirstSegment)
@@ -715,6 +730,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         var lease = initialLease;
         try
         {
+            ThrowIfPlaybackFailFast();
             var local = await TryGetLocalSegmentAsync(segmentId, segmentIndex, lease, cancellationToken)
                 .ConfigureAwait(false);
             if (local is null)
@@ -723,7 +739,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
             if (local is not null)
             {
                 lease = null;
-                return SegmentDownloadResult.Success(local, estimate);
+                return ToDownloadResult(local.Value, estimate, segmentId);
             }
 
             var missing = new UsenetArticleNotFoundException(segmentId);
@@ -747,7 +763,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         }
     }
 
-    private async Task<Stream?> TryGetLocalSegmentAsync(
+    private async Task<DrainedSegment?> TryGetLocalSegmentAsync(
         string segmentId,
         int segmentIndex,
         ArticleByteLease? lease,
@@ -778,7 +794,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         }
     }
 
-    private async Task<Stream?> TryGetLocalFallbackSegmentsAsync(
+    private async Task<DrainedSegment?> TryGetLocalFallbackSegmentsAsync(
         int segmentIndex,
         ArticleByteLease? lease,
         CancellationToken cancellationToken)
@@ -805,15 +821,16 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         var lease = initialLease;
         try
         {
+            ThrowIfPlaybackFailFast();
             var response = await responseTask.ConfigureAwait(false);
             await ThrowOnSegmentIdMismatchAsync(segmentId, response).ConfigureAwait(false);
 #pragma warning disable CA2000 // stream ownership transfers to the returned SegmentDownloadResult
-            var stream = await DrainSegmentAsync(
+            var drained = await DrainSegmentAsync(
 #pragma warning restore CA2000
                     response.Stream!, segmentIndex, cancellationToken, lease, estimate)
                 .ConfigureAwait(false);
             lease = null; // owned by BudgetedStream / buffer
-            return SegmentDownloadResult.Success(stream, estimate);
+            return ToDownloadResult(drained, estimate, segmentId);
         }
         catch (UsenetArticleNotFoundException e)
         {
@@ -822,7 +839,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
             if (fallback is not null)
             {
                 lease = null;
-                return SegmentDownloadResult.Success(fallback, estimate);
+                return ToDownloadResult(fallback.Value, estimate, segmentId);
             }
 
             if (_failFastOnFirstSegment && isFirstSegment) throw;
@@ -836,11 +853,11 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         {
             try
             {
-                var stream = await RetryCorruptSegmentAsync(
+                var retried = await RetryCorruptSegmentAsync(
                         segmentId, segmentIndex, e, lease, cancellationToken)
                     .ConfigureAwait(false);
                 lease = null;
-                return SegmentDownloadResult.Success(stream, estimate);
+                return ToDownloadResult(retried, estimate, segmentId);
             }
             catch (UsenetCorruptArticleException persistent)
             {
@@ -868,7 +885,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
             // dropped socket takes out unrelated segments with it. Re-request this
             // segment on its own first, which is what gives provider failover and the
             // streaming-timeout retries a chance before any data is degraded.
-            Stream? rescued;
+            DrainedSegment? rescued;
             try
             {
                 rescued = await TryRescueSegmentAsync(
@@ -890,7 +907,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
             }
 
             if (rescued is not null)
-                return SegmentDownloadResult.Success(rescued, estimate);
+                return ToDownloadResult(rescued.Value, estimate, segmentId);
 
             if (_failFastOnFirstSegment && isFirstSegment) throw;
             throw CreateTransientSegmentFailure(segmentId, segmentIndex, e);
@@ -907,7 +924,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
     /// if rescue confirms the article is genuinely missing, so the caller can gap-fill
     /// rather than treating it as a transient transport failure.
     /// </summary>
-    private async Task<Stream?> TryRescueSegmentAsync(
+    private async Task<DrainedSegment?> TryRescueSegmentAsync(
         string segmentId,
         int segmentIndex,
         Exception batchFailure,
@@ -942,12 +959,12 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                     }
                     await ThrowOnSegmentIdMismatchAsync(segmentId, response).ConfigureAwait(false);
 #pragma warning disable CA2000 // stream ownership transfers to the returned SegmentDownloadResult
-                    var stream = await DrainSegmentAsync(
+                    var rescued = await DrainSegmentAsync(
 #pragma warning restore CA2000
                         response.Stream!, segmentIndex, cancellationToken, lease, GetPlannedSegmentBytes(segmentIndex))
                         .ConfigureAwait(false);
                     lease = null;
-                    return stream;
+                    return rescued;
                 }
                 catch (UsenetArticleNotFoundException)
                 {
@@ -983,7 +1000,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         UsenetDecodedBodyResponse response) =>
         SegmentResponseValidator.ThrowOnSegmentIdMismatchAsync(segmentId, response);
 
-    private async Task<Stream> RetryCorruptSegmentAsync(
+    private async Task<DrainedSegment> RetryCorruptSegmentAsync(
         string segmentId,
         int segmentIndex,
         UsenetCorruptArticleException initialFailure,
@@ -1019,12 +1036,12 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                     }
                     await ThrowOnSegmentIdMismatchAsync(segmentId, response).ConfigureAwait(false);
 #pragma warning disable CA2000 // stream ownership transfers to the returned SegmentDownloadResult
-                    var stream = await DrainSegmentAsync(
+                    var retried = await DrainSegmentAsync(
 #pragma warning restore CA2000
                         response.Stream!, segmentIndex, cancellationToken, lease, GetPlannedSegmentBytes(segmentIndex))
                         .ConfigureAwait(false);
                     lease = null;
-                    return stream;
+                    return retried;
                 }
                 catch (UsenetCorruptArticleException exception)
                 {
@@ -1037,7 +1054,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
             if (fallback is not null)
             {
                 lease = null;
-                return fallback;
+                return fallback.Value;
             }
 
             ExceptionDispatchInfo.Capture(failure).Throw();
@@ -1056,7 +1073,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
     /// attempts; on success ownership transfers to the returned stream, on miss
     /// the caller still owns the lease.
     /// </summary>
-    private async Task<Stream?> TryFallbackSegmentsAsync(
+    private async Task<DrainedSegment?> TryFallbackSegmentsAsync(
         int segmentIndex,
         ArticleByteLease? existingLease,
         CancellationToken cancellationToken)
@@ -1098,12 +1115,12 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                         "Segment {PrimaryIndex} recovered via fallback MessageId {FallbackId} while reading {FileName}.",
                         segmentIndex, fallbackId, _fileName);
 #pragma warning disable CA2000 // stream ownership transfers to the returned SegmentDownloadResult
-                    var stream = await DrainSegmentAsync(
+                    var drained = await DrainSegmentAsync(
 #pragma warning restore CA2000
                         bodyResponse.Stream!, segmentIndex, cancellationToken, lease, GetPlannedSegmentBytes(segmentIndex))
                         .ConfigureAwait(false);
                     lease = null;
-                    return stream;
+                    return drained;
                 }
                 catch (UsenetArticleNotFoundException)
                 {
@@ -1186,6 +1203,8 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         else
             Par2RepairTriggerSink.Current?.ReportZeroFill(_fileName, segmentId, segmentIndex, fill);
 
+        PlaybackHoleTracker.RecordHole(_fileName, segmentId, exception);
+
 #pragma warning disable CA2000 // gap-fill stream ownership transfers to the returned SegmentDownloadResult
         return SegmentDownloadResult.ZeroFill(
             CreateGapFillStream(fill, segmentIndex),
@@ -1248,7 +1267,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         return new TransientSegmentExhaustionException(message, failure);
     }
 
-    private async Task<Stream> DrainSegmentAsync(
+    private async Task<DrainedSegment> DrainSegmentAsync(
         Stream source,
         int segmentIndex,
         CancellationToken cancellationToken,
@@ -1285,8 +1304,11 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                 StreamStallKind.BodyDrain,
                 Stopwatch.GetElapsedTime(drainStarted));
             var drained = buffer.Length;
+            var shortPadded = false;
             if (hasExactSize)
-                AlignDrainedSegment(buffer, segmentIndex, drained, exactSize);
+            {
+                shortPadded = AlignDrainedSegment(buffer, segmentIndex, drained, exactSize);
+            }
             else
                 _segmentSizes.RecordObservedSize(segmentIndex, drained);
 
@@ -1305,7 +1327,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                 : new BudgetedStream(buffer, lease);
             ownsLease = false;
             buffer = null;
-            return result;
+            return new DrainedSegment(result, shortPadded);
         }
         catch
         {
@@ -1396,14 +1418,10 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         return await _budget.LeaseAsync(estimate, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Keeps a segment's contribution equal to its recorded length. Leaving either a
-    /// shortfall or an overrun would shift every following byte, so short bodies are
-    /// padded and long bodies are truncated to the recorded size.
-    /// </summary>
-    private void AlignDrainedSegment(PooledBufferStream buffer, int segmentIndex, long drained, long expected)
+    /// <returns>True when the body was short and padded to the recorded length.</returns>
+    private bool AlignDrainedSegment(PooledBufferStream buffer, int segmentIndex, long drained, long expected)
     {
-        if (drained == expected) return;
+        if (drained == expected) return false;
 
         if (drained > expected)
         {
@@ -1411,20 +1429,14 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                 "Segment {SegmentIndex} of {FileName} decoded {Drained} bytes but was recorded as {Expected}. Truncating to keep offsets aligned.",
                 segmentIndex, _fileName, drained, expected);
             buffer.SetLength(expected);
-            return;
+            return false;
         }
 
         var shortfall = expected - drained;
-        ZeroFillLogLimiter.Write(
-            "Segment {SegmentId} of {FileName} decoded {Bytes} bytes short of its recorded size. " +
-            "Filling the gap to keep the rest of the file aligned.",
-            _segmentIds.Span[segmentIndex],
-            _fileName,
-            shortfall);
-        if (MultiProviderNntpClient.CurrentReadSessionId is { } sessionId)
-            StreamTrace.TryZeroFill(sessionId, _segmentIds.Span[segmentIndex], shortfall);
-
+        var segmentId = _segmentIds.Span[segmentIndex];
+        SegmentHoleReporter.ReportShortDecode(_fileName, segmentId, segmentIndex, shortfall);
         buffer.SetLength(expected);
+        return true;
     }
 
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
@@ -1499,7 +1511,26 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
     {
         if (!result.IsZeroFill)
         {
+            if (result.IsShortPad)
+            {
+                _consecutiveZeroFills++;
+                if (_consecutiveZeroFills < GapFillLimits.MaxConsecutiveZeroFills
+                    && !PlaybackHoleTracker.ShouldFailFast(_fileName, out _))
+                    return result.Stream;
+
+                result.Stream.Dispose();
+                _cts.Cancel();
+                if (PlaybackHoleTracker.ShouldFailFast(_fileName, out var failFast)
+                    && failFast is not null)
+                {
+                    ExceptionDispatchInfo.Capture(failFast).Throw();
+                }
+
+                throw new UsenetArticleNotFoundException(result.SegmentId ?? _segmentIds.Span[0]);
+            }
+
             _consecutiveZeroFills = 0;
+            PlaybackHoleTracker.RecordGoodSegment(_fileName);
             return result.Stream;
         }
 
@@ -1513,7 +1544,8 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         if (MultiProviderNntpClient.CurrentReadSessionId is { } sessionId)
             StreamTrace.TryZeroFill(sessionId, result.SegmentId!, result.Bytes);
 
-        if (_consecutiveZeroFills < GapFillLimits.MaxConsecutiveZeroFills)
+        if (_consecutiveZeroFills < GapFillLimits.MaxConsecutiveZeroFills
+            && !PlaybackHoleTracker.ShouldFailFast(_fileName, out _))
             return result.Stream;
 
         result.Stream.Dispose();
@@ -1609,18 +1641,25 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         _cts.Dispose();
     }
 
+    private readonly record struct DrainedSegment(Stream Stream, bool ShortPadded);
+
     private sealed record SegmentDownloadResult(
         Stream Stream,
         long PlannedBytes = 0,
         string? MessageTemplate = null,
         string? SegmentId = null,
         long Bytes = 0,
-        Exception? Failure = null)
+        Exception? Failure = null,
+        bool IsShortPad = false)
     {
         public bool IsZeroFill => Failure is not null;
 
-        public static SegmentDownloadResult Success(Stream stream, long plannedBytes = 0) =>
-            new(stream, plannedBytes);
+        public static SegmentDownloadResult Success(
+            Stream stream,
+            long plannedBytes = 0,
+            bool isShortPad = false,
+            string? segmentId = null) =>
+            new(stream, plannedBytes, SegmentId: segmentId, IsShortPad: isShortPad);
 
         public static SegmentDownloadResult ZeroFill(
             Stream stream,
