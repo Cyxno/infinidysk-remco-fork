@@ -98,9 +98,16 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Post :dev refresh to Discord
         env:
-          DISCORD_DEVELOPMENT_WEBHOOK_URL: ${{ secrets.DISCORD_DEVELOPMENT_WEBHOOK_URL }}
+          DISCORD_ANNOUNCEMENTS_WEBHOOK_URL: ${{ secrets.DISCORD_ANNOUNCEMENTS_WEBHOOK_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ github.sha }}
           PREVIOUS_SHA: ${{ needs.tag-dev.outputs.previous_sha }}
@@ -108,15 +115,19 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if [ -z "${DISCORD_DEVELOPMENT_WEBHOOK_URL}" ]; then
-            echo "DISCORD_DEVELOPMENT_WEBHOOK_URL secret is not set" >&2
+          if [ -z "${DISCORD_ANNOUNCEMENTS_WEBHOOK_URL}" ]; then
+            echo "DISCORD_ANNOUNCEMENTS_WEBHOOK_URL secret is not set" >&2
             exit 1
           fi
 
           BASE_LABEL="Changes since last dev build"
+          HAS_COMMITS=false
           if [ -n "${PREVIOUS_SHA}" ] && [ "${PREVIOUS_SHA}" != "${SHA}" ]; then
             CHANGELOG=$(gh api "repos/${REPO}/compare/${PREVIOUS_SHA}...${SHA}" \
               --jq '.commits[] | "- " + (.commit.message | split("\n")[0] | sub(" \\(#[0-9]+\\)$"; ""))')
+            if [ -n "${CHANGELOG}" ]; then
+              HAS_COMMITS=true
+            fi
           elif [ "${PREVIOUS_SHA}" = "${SHA}" ]; then
             CHANGELOG="- (no new commits since last dev build)"
           else
@@ -127,8 +138,17 @@ jobs:
             CHANGELOG="- (no new commits since last dev build)"
           fi
 
-          ANNOUNCEMENT_BODY=$(printf '🛠️ **Dev Branch Update** (version `%s`)\nRelease and downloads: https://github.com/%s/releases/tag/dev\n\n%s\n%s' \
-            "${DEV_LABEL}" "${REPO}" "${BASE_LABEL}" "${CHANGELOG}")
+          SUMMARY=""
+          if [ "${HAS_COMMITS}" = "true" ]; then
+            SUMMARY=$(printf '%s' "$CHANGELOG" | bash .github/scripts/summarize-release-notes.sh --type dev --version "${DEV_LABEL}" || true)
+          fi
+          if [ -n "${SUMMARY}" ]; then
+            ANNOUNCEMENT_BODY=$(printf '🛠️ **Dev Branch Update** (version `%s`)\nRelease and downloads: https://github.com/%s/releases/tag/dev\n\n%s' \
+              "${DEV_LABEL}" "${REPO}" "${SUMMARY}")
+          else
+            ANNOUNCEMENT_BODY=$(printf '🛠️ **Dev Branch Update** (version `%s`)\nRelease and downloads: https://github.com/%s/releases/tag/dev\n\n%s\n%s' \
+              "${DEV_LABEL}" "${REPO}" "${BASE_LABEL}" "${CHANGELOG}")
+          fi
 
           MAX_LEN=1900
           if [ "${#ANNOUNCEMENT_BODY}" -gt "${MAX_LEN}" ]; then
@@ -138,4 +158,4 @@ jobs:
           ESCAPED_BODY=$(printf '%s' "$ANNOUNCEMENT_BODY" | jq -Rsa .)
           curl --fail-with-body -sS -H "Content-Type: application/json" \
             -d "{\"content\": ${ESCAPED_BODY}, \"flags\": 4, \"allowed_mentions\": {\"parse\": []}}" \
-            "$DISCORD_DEVELOPMENT_WEBHOOK_URL"
+            "$DISCORD_ANNOUNCEMENTS_WEBHOOK_URL"
