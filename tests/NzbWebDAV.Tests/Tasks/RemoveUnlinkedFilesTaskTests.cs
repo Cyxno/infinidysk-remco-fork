@@ -716,7 +716,6 @@ public class RemoveUnlinkedFilesTaskTests
         var rootDir = Path.Join(Path.GetTempPath(), $"nzbdav-orphan-{Guid.NewGuid():N}");
         var libraryDir = Path.Join(rootDir, "library");
         var completedDir = Path.Join(rootDir, "completed-downloads");
-        var symlinkDir = Path.Join(rootDir, "symlinks");
         Directory.CreateDirectory(libraryDir);
         await using var harness = await TempDb.CreateAsync();
         try
@@ -744,24 +743,17 @@ public class RemoveUnlinkedFilesTaskTests
             orphan.GeneratedStrmPath = strmPath;
             orphan.GeneratedStrmTarget = strmTarget;
 
-            var symlinkPath = Path.Join(symlinkDir, "movies", "Some.Release", "orphan.mkv");
-            var symlinkTarget = $"/mnt/nzbdav/.ids/{orphanId}";
-            orphan.GeneratedSymlinkOutputRoot = Path.GetFullPath(symlinkDir);
-            orphan.GeneratedSymlinkPath = symlinkPath;
-            orphan.GeneratedSymlinkTarget = symlinkTarget;
-
             ctx.Items.Add(orphan);
             await ctx.SaveChangesAsync();
 
             Directory.CreateDirectory(Path.GetDirectoryName(strmPath)!);
             await File.WriteAllTextAsync(strmPath, strmTarget);
-            Directory.CreateDirectory(Path.GetDirectoryName(symlinkPath)!);
-            File.CreateSymbolicLink(symlinkPath, symlinkTarget);
 
             var config = new ConfigManager();
             config.UpdateValues(
             [
                 new ConfigItem { ConfigName = ConfigKeys.MediaLibraryDir, ConfigValue = libraryDir },
+                new ConfigItem { ConfigName = ConfigKeys.ApiImportStrategy, ConfigValue = "strm" },
                 new ConfigItem { ConfigName = ConfigKeys.ApiCompletedDownloadsDir, ConfigValue = completedDir },
             ]);
 
@@ -779,17 +771,13 @@ public class RemoveUnlinkedFilesTaskTests
             Assert.StartsWith("Done. Removed 1 unlinked files.", progress);
             Assert.False(await ctx.Items.AnyAsync(x => x.Id == orphanId));
             Assert.False(File.Exists(strmPath));
-            Assert.Null(new FileInfo(symlinkPath).LinkTarget);
 
             // empty sidecar directories are pruned up to (but not including) the output root
             Assert.False(Directory.Exists(Path.Join(completedDir, "movies")));
-            Assert.False(Directory.Exists(Path.Join(symlinkDir, "movies")));
             Assert.True(Directory.Exists(completedDir));
-            Assert.True(Directory.Exists(symlinkDir));
 
             var report = RemoveUnlinkedFilesTask.GetAuditReport();
             Assert.Contains($"(strm sidecar of {orphan.Path})", report);
-            Assert.Contains($"(symlink sidecar of {orphan.Path})", report);
         }
         finally
         {
@@ -844,6 +832,7 @@ public class RemoveUnlinkedFilesTaskTests
             config.UpdateValues(
             [
                 new ConfigItem { ConfigName = ConfigKeys.MediaLibraryDir, ConfigValue = libraryDir },
+                new ConfigItem { ConfigName = ConfigKeys.ApiImportStrategy, ConfigValue = "strm" },
                 new ConfigItem { ConfigName = ConfigKeys.ApiCompletedDownloadsDir, ConfigValue = completedDir },
             ]);
 
@@ -914,6 +903,7 @@ public class RemoveUnlinkedFilesTaskTests
             config.UpdateValues(
             [
                 new ConfigItem { ConfigName = ConfigKeys.MediaLibraryDir, ConfigValue = libraryDir },
+                new ConfigItem { ConfigName = ConfigKeys.ApiImportStrategy, ConfigValue = "strm" },
                 new ConfigItem { ConfigName = ConfigKeys.ApiCompletedDownloadsDir, ConfigValue = completedDir },
             ]);
 
@@ -949,7 +939,7 @@ public class RemoveUnlinkedFilesTaskTests
     {
         // A completed-downloads dir nested inside the Library Directory must not let
         // generated strm sidecars mark their own dav-items as "linked"; otherwise nothing
-        // with STRM output enabled could ever be orphaned.
+        // using the STRM import strategy could ever be orphaned.
         await BaseTask.ResetRunningTaskForTestsAsync();
         var rootDir = Path.Join(Path.GetTempPath(), $"nzbdav-orphan-{Guid.NewGuid():N}");
         var libraryDir = Path.Join(rootDir, "data");
@@ -966,6 +956,7 @@ public class RemoveUnlinkedFilesTaskTests
             config.UpdateValues(
             [
                 new ConfigItem { ConfigName = ConfigKeys.MediaLibraryDir, ConfigValue = libraryDir },
+                new ConfigItem { ConfigName = ConfigKeys.ApiImportStrategy, ConfigValue = "strm" },
                 new ConfigItem { ConfigName = ConfigKeys.ApiCompletedDownloadsDir, ConfigValue = completedDir },
             ]);
 
@@ -1029,6 +1020,7 @@ public class RemoveUnlinkedFilesTaskTests
             config.UpdateValues(
             [
                 new ConfigItem { ConfigName = ConfigKeys.MediaLibraryDir, ConfigValue = libraryDir },
+                new ConfigItem { ConfigName = ConfigKeys.ApiImportStrategy, ConfigValue = "strm" },
                 new ConfigItem { ConfigName = ConfigKeys.ApiCompletedDownloadsDir, ConfigValue = completedDir },
             ]);
 
@@ -1045,6 +1037,53 @@ public class RemoveUnlinkedFilesTaskTests
             Assert.NotNull(progress);
             Assert.StartsWith("Dry Run - Done.", progress);
             Assert.Contains("Identified 1 unlinked files", progress);
+        }
+        finally
+        {
+            await BaseTask.ResetRunningTaskForTestsAsync();
+            RemoveUnlinkedFilesTask.ClearAuditPathsForTests();
+            try { Directory.Delete(rootDir, recursive: true); } catch (IOException) { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task DryRun_CountsLibraryLinksUnderCompletedDownloadsDirInSymlinkMode()
+    {
+        // In symlink mode, completed-downloads-dir is not InfiniDysk's generated output.
+        // Arr-imported links that happen to sit under that path must still count.
+        await BaseTask.ResetRunningTaskForTestsAsync();
+        var rootDir = Path.Join(Path.GetTempPath(), $"nzbdav-orphan-{Guid.NewGuid():N}");
+        var libraryDir = Path.Join(rootDir, "data");
+        var completedDir = Path.Join(libraryDir, "completed-downloads");
+        Directory.CreateDirectory(completedDir);
+        await using var harness = await TempDb.CreateAsync();
+        try
+        {
+            var ctx = harness.Context;
+            await SeedRootsAsync(ctx);
+            await SeedLinkedItemsAsync(ctx, completedDir, 5);
+
+            var config = new ConfigManager();
+            config.UpdateValues(
+            [
+                new ConfigItem { ConfigName = ConfigKeys.MediaLibraryDir, ConfigValue = libraryDir },
+                new ConfigItem { ConfigName = ConfigKeys.ApiImportStrategy, ConfigValue = "symlinks" },
+                new ConfigItem { ConfigName = ConfigKeys.ApiCompletedDownloadsDir, ConfigValue = completedDir },
+            ]);
+
+            var websocket = new WebsocketManager();
+            var task = new RemoveUnlinkedFilesTask(
+                config,
+                websocket,
+                isDryRun: true,
+                createContext: () => harness.CreateContext());
+
+            Assert.True(await task.Execute());
+
+            var progress = websocket.PeekLastMessage(WebsocketTopic.CleanupTaskProgress);
+            Assert.NotNull(progress);
+            Assert.DoesNotContain("Aborted:", progress, StringComparison.Ordinal);
+            Assert.StartsWith("Dry Run - Done.", progress);
         }
         finally
         {
