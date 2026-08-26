@@ -72,7 +72,7 @@ public class QueueItemProcessor(
     }
 
     private const int MaxProviderRetryAttempts = 20;
-    private static readonly TimeSpan StageWarningInterval = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan StageWarningInterval = TimeSpan.FromMinutes(2);
 
     /// <summary>
     /// Set by the queue's stuck watchdog when this worker's cancellation should
@@ -206,8 +206,10 @@ public class QueueItemProcessor(
                 queueItem.PauseUntil = DateTime.Now + backoff;
                 dbClient.Ctx.QueueItems.Attach(queueItem);
                 dbClient.Ctx.Entry(queueItem).Property(x => x.PauseUntil).IsModified = true;
-                await WithFinalizeLockAsync(() => dbClient.Ctx.SaveChangesAsync(ct))
-                    .ConfigureAwait(false);
+                // Retry persistence is a single-row PauseUntil write. It must not join
+                // the finalize convoy — a worker blocked in readiness/blob I/O would
+                // otherwise pin every provider-retry for the process.
+                await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);
                 _ = websocketManager.SendMessage(WebsocketTopic.QueueItemStatus, $"{queueItem.Id}|Queued");
             }
             catch (Exception ex) when (ex is DbUpdateException or InvalidOperationException)
@@ -513,7 +515,10 @@ public class QueueItemProcessor(
             if (configManager.IsEnsureImportableMediaEnabled())
                 new EnsureImportableMediaValidator(dbClient).ThrowIfValidationFails();
 
-            if (healthCheckCategories.Contains(queueItem.Category.ToLowerInvariant()))
+            // BODY readiness runs for the explicit health-check categories and, when
+            // ensure-importable-video is on, for the common media categories — so a
+            // short-decoded or unseekable file fails into history before Arr/rclone.
+            if (configManager.GetMediaReadinessCategories().Contains(queueItem.Category.ToLowerInvariant()))
             {
                 await RunStageAsync(
                     "import-readiness",
@@ -836,6 +841,7 @@ public class QueueItemProcessor(
             dbClient.Ctx.SuppressAutomaticRcloneVfsForget = true;
             try
             {
+                _stageReporter("finalize-commit");
                 await dbClient.Ctx.SaveChangesAsync(finalizeCt).ConfigureAwait(false);
             }
             finally
@@ -889,6 +895,7 @@ public class QueueItemProcessor(
         }
 
         var waitCt = cancellationToken ?? ct;
+        _stageReporter("finalize-lock-wait");
         await finalizeLock.WaitAsync(waitCt).ConfigureAwait(false);
         try
         {

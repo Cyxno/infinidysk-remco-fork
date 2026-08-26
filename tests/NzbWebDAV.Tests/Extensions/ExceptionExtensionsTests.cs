@@ -188,13 +188,36 @@ public class ExceptionExtensionsTests
     }
 
     [Fact]
-    public void TryGetKnownErrorMessage_OtherSqliteErrors_StayUnknown()
+    public void TryGetKnownErrorMessage_RecognizesSqliteBusy()
     {
-        // Busy/locked and friends stay unclassified: they are transient and
-        // handled by their own retry paths, not by corruption guidance.
         var ex = new SqliteException("SQLite Error 5: 'database is locked'.", 5);
 
-        Assert.False(ex.TryGetKnownErrorMessage(out _));
+        Assert.True(ex.TryGetKnownErrorMessage(out var reason));
+        Assert.Contains("locked", reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(5)]
+    [InlineData(6)]
+    public void IsTransientDatabaseException_RecognizesBusyAndLocked(int errorCode)
+    {
+        var ex = new SqliteException("sqlite contention", errorCode);
+
+        Assert.True(ex.IsTransientDatabaseException());
+        Assert.False(ex.IsKnownSqliteDiskException());
+    }
+
+    [Theory]
+    [InlineData(8, "SQLite Error 8: 'attempt to write a readonly database'.")]
+    [InlineData(13, "SQLite Error 13: 'database or disk is full'.")]
+    public void SqliteReadonlyAndFull_AreKnownButNotTransient(int errorCode, string message)
+    {
+        var ex = new SqliteException(message, errorCode);
+
+        Assert.False(ex.IsTransientDatabaseException());
+        Assert.True(ex.IsKnownSqliteDiskException());
+        Assert.True(ex.TryGetKnownErrorMessage(out var reason));
+        Assert.Equal(message, reason);
     }
 
     [Fact]
