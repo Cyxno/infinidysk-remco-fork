@@ -42,6 +42,8 @@ public static class ConfigKeys
     public const string UsenetCascadeEnabled = "usenet.cascade.enabled";
     public const string UsenetCascadeRetryPrimaryOnMiss = "usenet.cascade.retry-primary-on-miss";
     public const string UsenetIdleConnectionTimeoutSeconds = "usenet.idle-connection-timeout-seconds";
+    public const string UsenetNntpReadTimeoutSeconds = "usenet.nntp-read-timeout-seconds";
+    public const string UsenetReconnectDelayMilliseconds = "usenet.reconnect-delay-milliseconds";
     public const string UsenetWarmConnectionsEnabled = "usenet.warm-connections.enabled";
     public const string UsenetWarmConnectionsFloor = "usenet.warm-connections.floor";
     public const string UsenetMaxDownloadConnections = "usenet.max-download-connections";

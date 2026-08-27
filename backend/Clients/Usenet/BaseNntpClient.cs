@@ -33,13 +33,14 @@ public class BaseNntpClient : NntpClient
     }
 
 #pragma warning disable CA2000 // the client is stored in _client and disposed with this instance
-    public BaseNntpClient(bool skipTlsVerification) : this(new UsenetClient(new UsenetClientOptions
+    public BaseNntpClient(bool skipTlsVerification, TimeSpan? readTimeout = null) : this(new UsenetClient(new UsenetClientOptions
 #pragma warning restore CA2000
     {
         CrcValidation = EnvironmentUtil.GetEnvironmentVariable("USENET_DISABLE_CRC_VALIDATION") == "1"
             ? YencCrcValidationMode.Off
             : YencCrcValidationMode.WhenPresent,
         SkipTlsVerification = skipTlsVerification,
+        ReadTimeout = readTimeout ?? TimeSpan.FromSeconds(30),
         DecodedBodyBufferedBytesObserver = static delta =>
             InFlightArticleBudget.Current?.AccountBufferedPipeBytes(delta),
     }))

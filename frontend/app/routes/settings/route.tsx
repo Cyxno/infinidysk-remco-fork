@@ -87,6 +87,8 @@ const defaultConfig = {
   "usenet.article-buffer-size": "40",
   "usenet.in-flight-article-budget-mb": "",
   "usenet.idle-connection-timeout-seconds": "60",
+  "usenet.nntp-read-timeout-seconds": "30",
+  "usenet.reconnect-delay-milliseconds": "500",
   "usenet.pipelined-body-requests": "true",
   "usenet.streaming-body-batch-width": "",
   "usenet.segment-cache.enabled": "true",

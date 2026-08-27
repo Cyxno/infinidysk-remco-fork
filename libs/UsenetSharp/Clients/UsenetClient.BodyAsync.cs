@@ -36,6 +36,7 @@ public partial class UsenetClient
         }
 
         var isReadBodyToPipeAsyncStarted = false;
+        var completionResult = ArticleBodyResult.NotRetrieved;
         CancellationTokenSource? operationCts = null;
 
         try
@@ -80,6 +81,9 @@ public partial class UsenetClient
 
             await DrainUnexpectedMultiLineAsync(responseCode, operationCts.Token)
                 .ConfigureAwait(false);
+            completionResult = responseCode == (int)UsenetResponseType.NoArticleWithThatMessageId
+                ? ArticleBodyResult.NotFound
+                : ArticleBodyResult.NotRetrieved;
 
             return new UsenetBodyResponse()
             {
@@ -95,7 +99,7 @@ public partial class UsenetClient
             {
                 operationCts?.Dispose();
                 _commandLock.Release();
-                onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved);
+                onConnectionReadyAgain?.Invoke(completionResult);
             }
         }
     }

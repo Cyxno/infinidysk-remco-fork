@@ -201,6 +201,8 @@ public class UsenetStreamingClient : WrappingNntpClient
 
         var connectionPoolStats = new ConnectionPoolStats(providerConfig, websocketManager);
         var idleTimeoutSeconds = configManager.GetIdleConnectionTimeoutSeconds();
+        var nntpReadTimeout = configManager.GetNntpReadTimeout();
+        var reconnectDelay = configManager.GetReconnectDelay();
         var streamingPriority = configManager.GetStreamingPriority();
         var tripDetector = new CorrelatedTripDetector();
         var providerClients = providerConfig.Providers
@@ -208,6 +210,8 @@ public class UsenetStreamingClient : WrappingNntpClient
                 provider,
                 connectionPoolStats.GetOnConnectionPoolChanged(index),
                 idleTimeoutSeconds,
+                nntpReadTimeout,
+                reconnectDelay,
                 configManager.IsWarmConnectionsEnabled()
                     ? configManager.GetWarmConnectionsFloor(provider.MaxConnections)
                     : 0,
@@ -233,6 +237,8 @@ public class UsenetStreamingClient : WrappingNntpClient
         UsenetProviderConfig.ConnectionDetails connectionDetails,
         EventHandler<ConnectionPoolStats.ConnectionPoolChangedEventArgs> onConnectionPoolChanged,
         int idleTimeoutSeconds,
+        TimeSpan nntpReadTimeout,
+        TimeSpan reconnectDelay,
         int warmConnectionFloor,
         MetricsWriter metricsWriter,
         SemaphorePriorityOdds? streamingPriority = null,
@@ -276,11 +282,15 @@ public class UsenetStreamingClient : WrappingNntpClient
         var connectionPool = CreateNewConnectionPool(
 #pragma warning restore CA2000
             maxConnections: maxConnections,
-            connectionFactory: ct => CreateNewConnection(connectionDetails, ct),
+            connectionFactory: ct => CreateNewConnection(connectionDetails, nntpReadTimeout, ct),
             onConnectionPoolChanged,
             idleTimeoutSeconds,
             warmConnectionFloor,
             streamingPriority,
+            diagnosticName: string.IsNullOrWhiteSpace(connectionDetails.Nickname)
+                ? connectionDetails.Host
+                : connectionDetails.Nickname,
+            replacementHandshakeSpacing: reconnectDelay,
             connectionLimitDetector: ex =>
                 UsenetConnectionLimitDetector.TryLearn(ex, out var learned) ? learned : null,
             onConnectionLimitLearned: (learned, effective) =>
@@ -370,6 +380,8 @@ public class UsenetStreamingClient : WrappingNntpClient
         int idleTimeoutSeconds,
         int warmConnectionFloor,
         SemaphorePriorityOdds? streamingPriority = null,
+        string? diagnosticName = null,
+        TimeSpan? replacementHandshakeSpacing = null,
         Func<Exception, int?>? connectionLimitDetector = null,
         Action<int, int>? onConnectionLimitLearned = null
     )
@@ -381,7 +393,7 @@ public class UsenetStreamingClient : WrappingNntpClient
         var connectionPool = new ConnectionPool<INntpClient>(
             maxConnections, connectionFactory, idleTimeout, streamingPriority,
             connectionLimitDetector, onConnectionLimitLearned, warmConnectionFloor,
-            KeepAliveAsync);
+            KeepAliveAsync, diagnosticName, replacementHandshakeSpacing);
         connectionPool.OnConnectionPoolChanged += onConnectionPoolChanged;
         var args = new ConnectionPoolStats.ConnectionPoolChangedEventArgs(0, 0, maxConnections);
         onConnectionPoolChanged(connectionPool, args);
@@ -410,9 +422,18 @@ public class UsenetStreamingClient : WrappingNntpClient
     (
         UsenetProviderConfig.ConnectionDetails connectionDetails,
         CancellationToken ct
+    ) => CreateNewConnection(connectionDetails, TimeSpan.FromSeconds(30), ct);
+
+    public static ValueTask<INntpClient> CreateNewConnection
+    (
+        UsenetProviderConfig.ConnectionDetails connectionDetails,
+        TimeSpan readTimeout,
+        CancellationToken ct
     ) => CreateNewConnection(
         connectionDetails,
-        () => new BaseNntpClient(connectionDetails.UseSsl && connectionDetails.SkipTlsVerification),
+        () => new BaseNntpClient(
+            connectionDetails.UseSsl && connectionDetails.SkipTlsVerification,
+            readTimeout),
         ct);
 
     internal static async ValueTask<INntpClient> CreateNewConnection

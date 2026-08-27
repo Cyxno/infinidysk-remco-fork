@@ -292,7 +292,7 @@ public class MultiConnectionNntpClient(
                             // Seek/abort cancels mid-pipeline; UsenetSharp reports NotRetrieved
                             // (socket unsafe to reuse). Replace the connection but do not treat
                             // client cancellation as provider health failure.
-                            LogException(connectionLock.Replace);
+                            LogException(() => connectionLock.Replace("pipelined-body-not-retrieved"));
                             if (!ct.IsCancellationRequested)
                                 RecordProviderFailure(failureReason is null
                                     ? $"pipeline-callback-{result}"
@@ -302,7 +302,7 @@ public class MultiConnectionNntpClient(
                             RecordProviderFailure(failureReason is null
                                 ? $"pipeline-callback-{result}"
                                 : $"pipeline-callback-{result} ({failureReason})");
-                            LogException(connectionLock.Replace);
+                            LogException(() => connectionLock.Replace($"pipelined-body-{result}"));
                             break;
                     }
 
@@ -321,7 +321,7 @@ public class MultiConnectionNntpClient(
                 // connection has an in-flight pipeline → replace it and try again, so a
                 // single slow provider does not decide what the stream delivers.
                 deferredCallback.Discard();
-                LogException(() => connectionLock?.Replace());
+                LogException(() => connectionLock?.Replace("streaming-timeout-pipelined-BODY"));
                 LogException(() => connectionLock?.Dispose());
                 if (retryCount > 0)
                 {
@@ -344,7 +344,7 @@ public class MultiConnectionNntpClient(
             catch (Exception e) when (e.IsCancellationException(ct) && e is not OutOfMemoryException)
             {
                 deferredCallback.Discard();
-                LogException(() => connectionLock?.Replace());
+                LogException(() => connectionLock?.Replace("caller-cancelled-pipelined-BODY"));
                 LogException(() => connectionLock?.Dispose());
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
@@ -355,7 +355,7 @@ public class MultiConnectionNntpClient(
                 // Normally this branch is reached while waiting to acquire and the lock is
                 // null. Keep cleanup here for the concurrent-dispose edge where the command
                 // itself observes disposal after acquisition.
-                LogException(() => connectionLock?.Replace());
+                LogException(() => connectionLock?.Replace("retired-pipelined-BODY"));
                 LogException(() => connectionLock?.Dispose());
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
@@ -364,8 +364,9 @@ public class MultiConnectionNntpClient(
             {
                 // Permanently missing / invalid segment ids are not connection failures.
                 deferredCallback.Discard();
+                circuitBreaker.RecordArticleNotFound();
                 LogException(() => connectionLock?.Dispose());
-                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotFound));
                 throw;
             }
             catch (Exception e) when (e is not OutOfMemoryException)
@@ -380,7 +381,7 @@ public class MultiConnectionNntpClient(
                 {
                     RecordProviderFailure($"pipeline-setup-{e.GetType().Name}");
                 }
-                LogException(() => connectionLock?.Replace());
+                LogException(() => connectionLock?.Replace("pipelined-BODY-command-failure"));
                 LogException(() => connectionLock?.Dispose());
 
                 // A pooled connection may have been closed server-side while idle;
@@ -469,7 +470,7 @@ public class MultiConnectionNntpClient(
             catch (Exception e) when (e is not OutOfMemoryException)
             {
                 RecordConnectionAcquisitionFailure(e, "get-connection", ct);
-                LogException(() => connectionLock?.Replace());
+                LogException(() => connectionLock?.Replace($"connection-acquisition-failure-{name}"));
                 LogException(() => connectionLock?.Dispose());
                 if (retryCount > 0)
                 {
@@ -527,7 +528,7 @@ public class MultiConnectionNntpClient(
                 // Do not invoke onConnectionReadyAgain on retry: the outer download
                 // permit stays held across attempts (same pattern as other retries).
                 deferredCallback.Discard();
-                LogException(() => connectionLock?.Replace());
+                LogException(() => connectionLock?.Replace($"streaming-timeout-{name}"));
                 LogException(() => connectionLock?.Dispose());
                 if (retryCount > 0)
                 {
@@ -552,7 +553,7 @@ public class MultiConnectionNntpClient(
             catch (Exception e) when (e.IsCancellationException(ct) && e is not OutOfMemoryException)
             {
                 deferredCallback.Discard();
-                LogException(() => connectionLock?.Replace());
+                LogException(() => connectionLock?.Replace($"caller-cancelled-{name}"));
                 LogException(() => connectionLock?.Dispose());
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
@@ -560,8 +561,9 @@ public class MultiConnectionNntpClient(
             catch (Exception e) when (e.TryGetCausingException(out UsenetArticleNotFoundException? _) && e is not OutOfMemoryException)
             {
                 deferredCallback.Discard();
+                circuitBreaker.RecordArticleNotFound();
                 LogException(() => connectionLock?.Dispose());
-                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotFound));
                 throw;
             }
             catch (Exception e) when (IsBodyCommand(name) && e.TryGetCausingException(out TimeoutException? _) && e is not OutOfMemoryException)
@@ -575,7 +577,7 @@ public class MultiConnectionNntpClient(
                 IncrementTimeoutCount(Host);
                 deferredCallback.Discard();
                 RecordProviderFailure($"read-timeout-{name}");
-                LogException(() => connectionLock?.Replace());
+                LogException(() => connectionLock?.Replace($"read-timeout-{name}"));
                 LogException(() => connectionLock?.Dispose());
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
@@ -588,7 +590,7 @@ public class MultiConnectionNntpClient(
                 // successes intentionally do not reset its BODY failure sampling window.
                 if (!wasReused && IsBodyCommand(name))
                     RecordProviderFailure($"cmd-setup-{name}-{e.GetType().Name}");
-                LogException(() => connectionLock?.Replace());
+                LogException(() => connectionLock?.Replace($"command-failure-{name}"));
                 LogException(() => connectionLock?.Dispose());
 
                 // A pooled connection may have been closed server-side while idle;
@@ -645,7 +647,7 @@ public class MultiConnectionNntpClient(
                 circuitBreaker.RecordArticleNotFound();
                 deferredCallback.Discard();
                 LogException(() => connectionLock?.Dispose());
-                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotFound));
             }
             else
             {
@@ -656,7 +658,7 @@ public class MultiConnectionNntpClient(
 
                     if (articleBodyResult == ArticleBodyResult.NotRetrieved)
                     {
-                        LogException(() => connectionLock?.Replace());
+                        LogException(() => connectionLock?.Replace($"body-callback-{name}-NotRetrieved"));
                         // Client abort (seek) must not trip the provider circuit breaker.
                         if (!ct.IsCancellationRequested)
                             RecordProviderFailure(failureReason is null
@@ -749,7 +751,7 @@ public class MultiConnectionNntpClient(
                 {
                     // Do not RecordFailure — STAT must not feed the breaker — but the
                     // connection is poisoned and must not return to the pool.
-                    connectionLock.Replace();
+                    connectionLock.Replace("pipelined-STAT-failure");
                     throw;
                 }
 
@@ -758,7 +760,7 @@ public class MultiConnectionNntpClient(
         }
         finally
         {
-            if (!completed) connectionLock.Replace();
+            if (!completed) connectionLock.Replace("pipelined-STAT-incomplete");
             connectionLock.Dispose();
         }
     }
@@ -803,7 +805,7 @@ public class MultiConnectionNntpClient(
 #pragma warning restore CA2016
                 {
                     RecordProviderFailure($"pipelined-enum-{e.GetType().Name}");
-                    connectionLock.Replace();
+                    connectionLock.Replace($"{operation}-failure");
                     throw;
                 }
 
@@ -813,7 +815,7 @@ public class MultiConnectionNntpClient(
         }
         finally
         {
-            if (!completed) connectionLock.Replace();
+            if (!completed) connectionLock.Replace($"{operation}-incomplete");
             connectionLock.Dispose();
         }
     }

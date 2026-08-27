@@ -175,27 +175,37 @@ public class ProviderCircuitBreaker
     /// <summary>
     /// Article permanently missing from retention. A 430 is a clean server response and
     /// says nothing about provider health, so it counts as a miss for diagnostics and
-    /// nothing else: it must not undo a trip, reset the cooldown ladder, satisfy the
-    /// half-open probe, or emit a Closed transition. On a closed circuit it does clear the
+    /// nothing else: it must not undo an open trip or reset the cooldown ladder. On a
+    /// closed circuit it does clear the
     /// failure sampling window, because the provider demonstrably answered.
     /// <para>
-    /// A miss recorded during a half-open probe leaves the probe slot claimed. It is not
-    /// evidence of recovery, so the slot is released by <see cref="ProbeAbandonTimeout"/>
-    /// rather than here.
+    /// A clean 430 received by a half-open probe proves that the NNTP command/response
+    /// path is healthy, so it closes the circuit without resetting the cooldown ladder.
     /// </para>
     /// </summary>
     public void RecordArticleNotFound()
     {
         Interlocked.Increment(ref _articleMissCount);
+        var closesHalfOpenCircuit = false;
 
         lock (_lock)
         {
-            if (_trippedUntilMs != 0 || Volatile.Read(ref _halfOpenProbeInFlight) != 0)
+            if (_trippedUntilMs > Clock())
                 return;
 
-            _window.Clear();
-            _failureBurstStartedAtMs = long.MinValue;
+            if (_trippedUntilMs != 0 || Volatile.Read(ref _halfOpenProbeInFlight) != 0)
+            {
+                closesHalfOpenCircuit = true;
+            }
+            else
+            {
+                _window.Clear();
+                _failureBurstStartedAtMs = long.MinValue;
+            }
         }
+
+        if (closesHalfOpenCircuit)
+            RecordSuccess(resetsCooldownLadder: false);
     }
 
     /// <summary>Read-only snapshot for dashboards. Does not claim a half-open probe.</summary>

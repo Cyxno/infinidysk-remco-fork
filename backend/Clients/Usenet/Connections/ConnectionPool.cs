@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Clients.Usenet.Contexts;
+using Serilog;
 
 namespace NzbWebDAV.Clients.Usenet.Connections;
 
@@ -64,6 +65,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private readonly Func<T, CancellationToken, Task>? _keepAlive;
     private readonly Func<Exception, int?>? _connectionLimitDetector;
     private readonly Action<int, int>? _onConnectionLimitLearned;
+    private readonly string _diagnosticName;
+    private readonly long _replacementHandshakeSpacingMs;
 
     /* --------------------------------- state --------------------------------------- */
 
@@ -78,6 +81,9 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private int _disposed; // 0 == false, 1 == true
     private int _effectiveMaxConnections;
     private int? _learnedConnectionLimit;
+    private long _nextReplacementHandshakeAtMs;
+    private long _replacementPacingUntilMs;
+    private int _consecutiveHandshakeFailures;
 
     // Lifetime churn counters. A pool that keeps destroying and re-opening connections
     // pays the handshake cost repeatedly and can never reach its configured width, which
@@ -109,7 +115,9 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         Func<Exception, int?>? connectionLimitDetector = null,
         Action<int, int>? onConnectionLimitLearned = null,
         int warmConnectionFloor = 0,
-        Func<T, CancellationToken, Task>? keepAlive = null)
+        Func<T, CancellationToken, Task>? keepAlive = null,
+        string? diagnosticName = null,
+        TimeSpan? replacementHandshakeSpacing = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxConnections);
 
@@ -127,6 +135,9 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         _effectiveMaxConnections = maxConnections;
         _connectionLimitDetector = connectionLimitDetector;
         _onConnectionLimitLearned = onConnectionLimitLearned;
+        _diagnosticName = string.IsNullOrWhiteSpace(diagnosticName) ? typeof(T).Name : diagnosticName;
+        _replacementHandshakeSpacingMs = Math.Max(
+            0, (long)(replacementHandshakeSpacing ?? TimeSpan.Zero).TotalMilliseconds);
         _gate = new PrioritizedSemaphore(maxConnections, maxConnections, priorityOdds);
         _sweeperTask = Task.Run(SweepLoop); // background idle-reaper
     }
@@ -227,15 +238,20 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             T conn;
             try
             {
+                await PaceReplacementHandshakeAsync(linked.Token).ConfigureAwait(false);
                 conn = await _factory(linked.Token).ConfigureAwait(false);
             }
             catch (Exception factoryError) when (factoryError is not OutOfMemoryException)
             {
                 Interlocked.Increment(ref _handshakeFailures);
+                var consecutiveFailures = Interlocked.Increment(ref _consecutiveHandshakeFailures);
+                ArmReplacementPacing(GetHandshakeFailureBackoffMs(consecutiveFailures));
                 TryShrinkOnConnectionLimit(factoryError);
                 ReleaseGateIfActive(); // free the permit on failure
                 throw;
             }
+
+            Interlocked.Exchange(ref _consecutiveHandshakeFailures, 0);
 
             var disposeConnection = false;
             lock (_lifecycleLock)
@@ -248,6 +264,10 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                 {
                     Interlocked.Increment(ref _connectionsOpened);
                     Interlocked.Increment(ref _live);
+                    Log.Debug(
+                        "NNTP connection created for {Provider}; connection={ConnectionId} live={Live} idle={Idle} active={Active} max={Max}",
+                        _diagnosticName, ConnectionId(conn), _live, _idleConnections.Count,
+                        _live - _idleConnections.Count, EffectiveMaxConnections);
                 }
             }
 
@@ -334,6 +354,10 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                 _idleConnections.Push(new Pooled(connection, Environment.TickCount64));
                 _gate.Release();
                 notify = true;
+                Log.Debug(
+                    "NNTP connection returned to pool for {Provider}; connection={ConnectionId} live={Live} idle={Idle} active={Active} max={Max}",
+                    _diagnosticName, ConnectionId(connection), _live, _idleConnections.Count,
+                    _live - _idleConnections.Count, EffectiveMaxConnections);
             }
         }
 
@@ -343,7 +367,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             TriggerConnectionPoolChangedEvent();
     }
 
-    private void Destroy(T connection)
+    private void Destroy(T connection, string? reason)
     {
         // When a lock requests replacement, we dispose the connection instead of reusing.
         DisposeConnection(connection);
@@ -352,6 +376,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         {
             Interlocked.Decrement(ref _live);
             Interlocked.Increment(ref _connectionsDestroyed);
+            ArmReplacementPacing(_replacementHandshakeSpacingMs);
             if (_disposed == 0)
             {
                 _gate.Release();
@@ -361,7 +386,71 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
         if (notify)
             TriggerConnectionPoolChangedEvent();
+
+        Log.Information(
+            "NNTP connection disposed for {Provider}; connection={ConnectionId} reason={Reason} live={Live} idle={Idle} active={Active} max={Max}",
+            _diagnosticName, ConnectionId(connection), reason ?? "replacement requested",
+            _live, _idleConnections.Count, _live - _idleConnections.Count, EffectiveMaxConnections);
     }
+
+    private async Task PaceReplacementHandshakeAsync(CancellationToken cancellationToken)
+    {
+        if (_replacementHandshakeSpacingMs == 0) return;
+
+        long delayMs;
+        lock (_lifecycleLock)
+        {
+            var now = Environment.TickCount64;
+            if (now >= Volatile.Read(ref _replacementPacingUntilMs))
+            {
+                Volatile.Write(ref _nextReplacementHandshakeAtMs, 0);
+                return;
+            }
+
+            var target = Volatile.Read(ref _nextReplacementHandshakeAtMs);
+            if (target == 0) return;
+
+            target = Math.Max(now, target);
+            delayMs = Math.Max(0, target - now);
+            Volatile.Write(
+                ref _nextReplacementHandshakeAtMs,
+                unchecked(target + _replacementHandshakeSpacingMs));
+        }
+
+        if (delayMs > 0)
+        {
+            Log.Debug(
+                "Pacing NNTP reconnect for {Provider} by {DelayMs}ms after connection replacement",
+                _diagnosticName, delayMs);
+            await Task.Delay(TimeSpan.FromMilliseconds(delayMs), cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private long GetHandshakeFailureBackoffMs(int consecutiveFailures)
+    {
+        if (_replacementHandshakeSpacingMs == 0) return 0;
+
+        // Login/connect failures are where account-wide limits can spiral: all local
+        // sockets may be gone while the provider still counts their server-side sessions.
+        // Back off exponentially so already-queued borrowers cannot hammer AUTHINFO.
+        var exponent = Math.Min(Math.Max(0, consecutiveFailures - 1), 6);
+        var multiplier = 1L << exponent;
+        return Math.Min(_replacementHandshakeSpacingMs * multiplier, 60_000);
+    }
+
+    private void ArmReplacementPacing(long delayMs)
+    {
+        if (delayMs == 0) return;
+        var now = Environment.TickCount64;
+        var candidate = unchecked(now + delayMs);
+        var pacingWindowMs = Math.Max(5000, Math.Max(delayMs, _replacementHandshakeSpacingMs * 10));
+        Volatile.Write(ref _replacementPacingUntilMs, unchecked(now + pacingWindowMs));
+        var current = Volatile.Read(ref _nextReplacementHandshakeAtMs);
+        if (current == 0 || candidate > current)
+            Volatile.Write(ref _nextReplacementHandshakeAtMs, candidate);
+    }
+
+    private static int ConnectionId(T connection) => RuntimeHelpers.GetHashCode(connection!);
 
     private void TriggerConnectionPoolChangedEvent()
     {
