@@ -163,7 +163,7 @@ jobs:
 
       - name: Post :dev refresh to Discord
         env:
-          DISCORD_ANNOUNCEMENTS_WEBHOOK_URL: ${{ secrets.DISCORD_ANNOUNCEMENTS_WEBHOOK_URL }}
+          DISCORD_ANNOUNCEMENTS_WEBHOOK_URL: ${{ secrets.DISCORD_DEVANNOUNCEMENTS_WEBHOOK_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
