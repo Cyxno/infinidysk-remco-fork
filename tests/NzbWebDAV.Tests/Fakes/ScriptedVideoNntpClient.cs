@@ -78,6 +78,12 @@ internal sealed class ScriptedVideoNntpClient(
         var responses = segmentIds
             .Select(id => DecodedBodyAsync(id, cancellationToken))
             .ToArray();
+        // The batch callback fires exactly once for the whole batch; forwarding
+        // it to each DecodedBodyAsync would fire it per segment. Like UsenetSharp,
+        // report NotFound when any segment is a clean miss instead of masking it.
+        var anyMissing = segmentIds.Any(id => id.ToString() != segmentId);
+        onConnectionReadyAgain?.Invoke(
+            anyMissing ? ArticleBodyResult.NotFound : ArticleBodyResult.Retrieved);
         return Task.FromResult(new UsenetDecodedBodyBatch { Responses = responses });
     }
 
