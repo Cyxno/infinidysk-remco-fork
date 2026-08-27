@@ -1,6 +1,7 @@
 using System.Text;
 using NzbWebDAV.Api.Errors;
 using NzbWebDAV.Models.Nzb;
+using NzbWebDAV.Tests.TestUtils;
 
 namespace NzbWebDAV.Tests.Api;
 
@@ -148,6 +149,49 @@ public class NzbInputValidatorTests
 
         Assert.Contains("subject", ex.Errors["nzb"][0], StringComparison.OrdinalIgnoreCase);
         Assert.Contains("1024", ex.Errors["nzb"][0], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PreCancelledToken_ThrowsOperationCanceled()
+    {
+        var xml = BuildNzb(fileCount: 1, segmentsPerFile: 2);
+        using var stream = Bytes(xml);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        Assert.Throws<OperationCanceledException>(
+            () => NzbInputValidator.ValidateAndSumSegmentBytes(
+                stream, NzbInputLimits.Default, cts.Token));
+    }
+
+    [Fact]
+    public void CancelMidDocument_ThrowsOperationCanceledBeforeLastSegment()
+    {
+        // ~3 MB single-file document; cancelling after 64 KiB of reads must
+        // surface as OCE (not ApiValidationException) while segments remain.
+        var xml = BuildNzb(fileCount: 1, segmentsPerFile: 50_000);
+        using var cts = new CancellationTokenSource();
+        using var stream = TestStreams.CancelAfterBytes(Bytes(xml), cancelAfterBytes: 64 * 1024, cts);
+
+        Assert.Throws<OperationCanceledException>(
+            () => NzbInputValidator.ValidateAndSumSegmentBytes(
+                stream, NzbInputLimits.Default, cts.Token));
+    }
+
+    [Fact]
+    public void CancelWhileReadingFinalSegment_ThrowsOperationCanceled()
+    {
+        // Delivery stops one byte into the final segment's content and the token
+        // is cancelled when the reader pulls the remainder, so cancellation lands
+        // after the per-segment check but before the closing </file> is seen.
+        var xml = BuildNzb(fileCount: 1, segmentsPerFile: 1);
+        var segmentContentStart = xml.IndexOf('>', xml.IndexOf("<segment ", StringComparison.Ordinal)) + 1;
+        using var cts = new CancellationTokenSource();
+        using var stream = TestStreams.CancelOnReadBeyond(Bytes(xml), byteLimit: segmentContentStart + 1, cts);
+
+        Assert.Throws<OperationCanceledException>(
+            () => NzbInputValidator.ValidateAndSumSegmentBytes(
+                stream, NzbInputLimits.Default, cts.Token));
     }
 
     private static string BuildNzb(int fileCount, int segmentsPerFile, long segmentBytes = 15)
