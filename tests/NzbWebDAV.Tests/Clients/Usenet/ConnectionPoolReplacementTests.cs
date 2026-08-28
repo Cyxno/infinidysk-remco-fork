@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Clients.Usenet.Connections;
+using NzbWebDAV.Tests.TestUtils;
 
 namespace NzbWebDAV.Tests.Clients.Usenet;
 
@@ -153,6 +154,83 @@ public class ConnectionPoolReplacementTests
         Assert.True(retryDelay >= 120,
             $"Concurrent handshake failures preserved only {retryDelay}ms of the longest backoff.");
         Assert.Equal(3, pool.GetChurn().HandshakeFailures);
+    }
+
+    [Fact]
+    public async Task CancelledReplacementFactory_DoesNotCountFailureOrDelayNextBorrower()
+    {
+        var clock = new ControllableTimeProvider();
+        var factoryCalls = 0;
+        var cancelledFactoryStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var pool = new ConnectionPool<DisposableProbe>(
+            maxConnections: 1,
+            async cancellationToken =>
+            {
+                var call = Interlocked.Increment(ref factoryCalls);
+                if (call == 2)
+                {
+                    cancelledFactoryStarted.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+
+                return new DisposableProbe(() => { });
+            },
+            replacementHandshakeSpacing: TimeSpan.FromSeconds(1),
+            timeProvider: clock);
+
+        var first = await pool.GetConnectionLockAsync(SemaphorePriority.High);
+        first.Replace("read-timeout-BODY");
+        first.Dispose();
+
+        clock.Advance(TimeSpan.FromSeconds(1));
+        using var cancellation = new CancellationTokenSource();
+        var cancelledBorrow = pool.GetConnectionLockAsync(
+            SemaphorePriority.High, cancellation.Token);
+        await cancelledFactoryStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await cancelledBorrow);
+
+        Assert.Equal(0, pool.GetChurn().HandshakeFailures);
+        Assert.Equal(1, pool.AvailableConnections);
+
+        var laterBorrow = pool.GetConnectionLockAsync(SemaphorePriority.High);
+        Assert.True(laterBorrow.IsCompleted,
+            "A cancelled replacement left its pacing reservation behind.");
+        using (await laterBorrow)
+        {
+            Assert.Equal(1, pool.LiveConnections);
+        }
+    }
+
+    [Fact]
+    public async Task CancelledReplacementPacingWait_DoesNotDelayNextBorrower()
+    {
+        var clock = new ControllableTimeProvider();
+        using var pool = new ConnectionPool<DisposableProbe>(
+            maxConnections: 1,
+            _ => ValueTask.FromResult(new DisposableProbe(() => { })),
+            replacementHandshakeSpacing: TimeSpan.FromSeconds(1),
+            timeProvider: clock);
+
+        var first = await pool.GetConnectionLockAsync(SemaphorePriority.High);
+        first.Replace("read-timeout-ARTICLE");
+        first.Dispose();
+
+        using var cancellation = new CancellationTokenSource();
+        var cancelledBorrow = pool.GetConnectionLockAsync(
+            SemaphorePriority.High, cancellation.Token);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await cancelledBorrow);
+
+        var laterBorrow = pool.GetConnectionLockAsync(SemaphorePriority.High);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        using (await laterBorrow.WaitAsync(TimeSpan.FromSeconds(1)))
+        {
+            Assert.Equal(1, pool.LiveConnections);
+        }
+
+        Assert.Equal(0, pool.GetChurn().HandshakeFailures);
     }
 
     private static void UpdateMaximum(ref int maximum, int candidate)
