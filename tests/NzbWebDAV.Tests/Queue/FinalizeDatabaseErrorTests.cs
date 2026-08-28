@@ -136,6 +136,17 @@ public sealed class FinalizeDatabaseErrorTests : IAsyncLifetime
             $"expected a real backoff, got {remaining.PauseUntil}");
     }
 
+    private static ConfigManager CreateConfig()
+    {
+        var config = new ConfigManager();
+        config.UpdateValues(
+        [
+            // Pin the source filename; default-on single-video rename is covered elsewhere.
+            new ConfigItem { ConfigName = ConfigKeys.ApiRenameSingleVideoToRelease, ConfigValue = "false" },
+        ]);
+        return config;
+    }
+
     private DavDatabaseContext CreateContext(params IInterceptor[] extraInterceptors) =>
         new(new DbContextOptionsBuilder<DavDatabaseContext>()
             .UseSqlite($"Data Source={DavDatabaseContext.DatabaseFilePath}")
@@ -170,7 +181,7 @@ public sealed class FinalizeDatabaseErrorTests : IAsyncLifetime
     private async Task ProcessAsync(DavDatabaseContext context, QueueItem queueItem, string segmentId)
     {
         await using var nzbStream = new MemoryStream(CreateNzbBytes(segmentId));
-        var config = new ConfigManager();
+        var config = CreateConfig();
         using var healthCheckConnectionGate = new HealthCheckConnectionGate(config);
         var processor = new QueueItemProcessor(
             queueItem,

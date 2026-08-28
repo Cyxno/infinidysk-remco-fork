@@ -197,6 +197,8 @@ public sealed class StrmPublishAfterCommitTests : IAsyncLifetime
             new ConfigItem { ConfigName = ConfigKeys.ApiCompletedDownloadsDir, ConfigValue = _strmDir },
             new ConfigItem { ConfigName = ConfigKeys.GeneralBaseUrl, ConfigValue = "http://localhost:3000" },
             new ConfigItem { ConfigName = ConfigKeys.ApiStrmKey, ConfigValue = "test-strm-key" },
+            // Pin the source filename; default-on single-video rename is covered elsewhere.
+            new ConfigItem { ConfigName = ConfigKeys.ApiRenameSingleVideoToRelease, ConfigValue = "false" },
         ]);
         return config;
     }

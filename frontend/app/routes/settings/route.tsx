@@ -64,6 +64,7 @@ const defaultConfig = {
   "api.manual-category": "uncategorized",
   "api.ensure-importable-video": "true",
   "api.sample-filter-enabled": "true",
+  "api.rename-single-video-to-release": "true",
   "api.skip-non-video-on-missing-articles": "true",
   "api.ensure-article-existence-categories": "",
   "api.article-existence-check-mode": "full",

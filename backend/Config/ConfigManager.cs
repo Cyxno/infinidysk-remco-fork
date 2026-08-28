@@ -463,6 +463,7 @@ public class ConfigManager : IConfigReader, IConfigUpdater, IConfigChangeSource
 
                 case ConfigKeys.ApiEnsureImportableVideo:
                 case ConfigKeys.ApiSampleFilterEnabled:
+                case ConfigKeys.ApiRenameSingleVideoToRelease:
                 case ConfigKeys.ApiIgnoreHistoryLimit:
                 case ConfigKeys.ApiLazyRarParsing:
                 case ConfigKeys.ApiNzbBackupEnabled:
@@ -2042,6 +2043,16 @@ public class ConfigManager : IConfigReader, IConfigUpdater, IConfigChangeSource
         var defaultValue = true;
         var configValue = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.ApiSampleFilterEnabled));
         return configValue != null ? bool.Parse(configValue) : defaultValue;
+    }
+
+    /// <summary>
+    /// When a completed job mounts exactly one video, rename it to the release
+    /// (mount folder) name. Default enabled; see issue #1090.
+    /// </summary>
+    public bool IsRenameSingleVideoToReleaseEnabled()
+    {
+        var configValue = StringUtil.EmptyToNull(GetConfigValue(ConfigKeys.ApiRenameSingleVideoToRelease));
+        return configValue == null || bool.Parse(configValue);
     }
 
     public string GetImportStrategy()
