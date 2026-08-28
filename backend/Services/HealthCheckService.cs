@@ -92,6 +92,14 @@ public class HealthCheckService : BackgroundService, IHealthCheckQuiescence
     public const int SampleFloor = 8000;
 
     /// <summary>
+    /// Operator-forced full recheck sentinel for <see cref="DavItem.NextHealthCheck"/>, written by
+    /// the reset-health-check-queue endpoint. Like the UnixEpoch urgent sentinel it overrides the
+    /// history-linked exclusion, but it is processed as a normal STAT check (not an urgent repair)
+    /// and is overwritten by regular scheduling once the check completes.
+    /// </summary>
+    public static readonly DateTimeOffset ForcedRecheckSentinel = DateTimeOffset.UnixEpoch.AddSeconds(1);
+
+    /// <summary>
     /// One-time boot delay before the first background sweep. Queue resume, first streams,
     /// and pool warm-up hit cold connection pools simultaneously at startup; giving them a
     /// short grace window keeps health-check STATs out of the connection storm (#881).
@@ -829,11 +837,13 @@ public class HealthCheckService : BackgroundService, IHealthCheckQuiescence
     public static IOrderedQueryable<DavItem> GetHealthCheckQueueItems(DavDatabaseClient dbClient)
     {
         // Playback-triggered urgent repairs stay first. Never-checked files come next so
-        // routine rechecks cannot starve the initial scan.
+        // routine rechecks cannot starve the initial scan, then operator-forced rechecks
+        // (newest release first), then routine scheduled rechecks.
         return GetHealthCheckQueueItemsQuery(dbClient)
             .OrderBy(x =>
                 x.NextHealthCheck == DateTimeOffset.UnixEpoch ? 0 :
-                x.NextHealthCheck == null ? 1 : 2)
+                x.NextHealthCheck == null ? 1 :
+                x.NextHealthCheck == ForcedRecheckSentinel ? 2 : 3)
             .ThenBy(x => x.NextHealthCheck)
             .ThenByDescending(x => x.ReleaseDate)
             .ThenBy(x => x.Id);
@@ -843,12 +853,15 @@ public class HealthCheckService : BackgroundService, IHealthCheckQuiescence
     {
         // History-linked files are skipped for routine STAT checks so they do not race SAB
         // post-processing. UnixEpoch is the playback-triggered urgent sentinel from
-        // ExceptionMiddleware and intentionally overrides only that exclusion.
+        // ExceptionMiddleware; ForcedRecheckSentinel is the operator-triggered full-library
+        // recheck from the reset-health-check-queue endpoint. Both intentionally override
+        // only that exclusion.
         return dbClient.Ctx.Items
             .Where(x => x.Type == DavItem.ItemType.UsenetFile)
             .Where(x =>
                 x.HistoryItemId == null ||
-                x.NextHealthCheck == DateTimeOffset.UnixEpoch);
+                x.NextHealthCheck == DateTimeOffset.UnixEpoch ||
+                x.NextHealthCheck == ForcedRecheckSentinel);
     }
 
     private DavDatabaseContext CreateContext() =>

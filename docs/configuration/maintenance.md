@@ -30,6 +30,7 @@ Database housekeeping, scheduled orphan cleanup, and one-off tools.
 | Convert STRM → Symlinks | Strategy migration | Needs library dir + rclone mount |
 | Recreate STRM Files | Refresh sidecars | Needs STRM strategy + completed dir + base URL |
 | Migrate blobs to blobstore | Background optimization | Usually automatic |
+| Re-run Library Health Checks [since 1.3.0](https://github.com/infinidysk/infinidysk/releases/tag/v1.3.0){ .nzbdav-since } | Fresh health-check pass over every video, audio, and archive file, including items still in SAB history | Heavy Usenet STAT traffic on large libraries; runs in the background |
 | Reset Health-Check Statistics | Clear HC history | Cannot undo |
 | Reset Overview Statistics [since 0.8.0](https://github.com/infinidysk/infinidysk/releases/tag/v0.8.0){ .nzbdav-since } | Clear overview metrics | Cannot undo |
 
