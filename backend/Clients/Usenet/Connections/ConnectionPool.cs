@@ -84,6 +84,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private int? _learnedConnectionLimit;
     private long _nextReplacementHandshakeAtMs;
     private long _replacementPacingUntilMs;
+    private readonly Dictionary<long, ReplacementPacingReservation> _cancelledPacingReservations = [];
     private int _consecutiveHandshakeFailures;
 
     // Lifetime churn counters. A pool that keeps destroying and re-opening connections
@@ -444,6 +445,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             if (now >= Volatile.Read(ref _replacementPacingUntilMs))
             {
                 Volatile.Write(ref _nextReplacementHandshakeAtMs, 0);
+                _cancelledPacingReservations.Clear();
                 return null;
             }
 
@@ -484,6 +486,9 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             throw;
         }
 
+        lock (_lifecycleLock)
+            _cancelledPacingReservations.Remove(reservation.PreviousDeadlineMs);
+
         return reservation;
     }
 
@@ -493,13 +498,13 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
         lock (_lifecycleLock)
         {
-            // Never overwrite a newer borrower's reservation. If this is still the
-            // tail slot, removing it makes cancellation pacing-neutral.
-            if (_nextReplacementHandshakeAtMs == value.ReservedDeadlineMs)
+            _cancelledPacingReservations[value.ReservedDeadlineMs] = value;
+            while (_cancelledPacingReservations.Remove(
+                       _nextReplacementHandshakeAtMs, out var cancelledTail))
             {
-                _nextReplacementHandshakeAtMs = value.PreviousDeadlineMs;
-                if (_replacementPacingUntilMs == value.ReservedPacingUntilMs)
-                    _replacementPacingUntilMs = value.PreviousPacingUntilMs;
+                _nextReplacementHandshakeAtMs = cancelledTail.PreviousDeadlineMs;
+                if (_replacementPacingUntilMs == cancelledTail.ReservedPacingUntilMs)
+                    _replacementPacingUntilMs = cancelledTail.PreviousPacingUntilMs;
             }
         }
     }

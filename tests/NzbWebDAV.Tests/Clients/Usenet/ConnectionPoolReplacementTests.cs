@@ -284,6 +284,53 @@ public class ConnectionPoolReplacementTests
         Assert.Equal(0, pool.GetChurn().HandshakeFailures);
     }
 
+    [Fact]
+    public async Task CancelledPacingWaits_CollapseNonTailReservations()
+    {
+        var clock = new SignalingTimeProvider();
+        using var pool = new ConnectionPool<DisposableProbe>(
+            maxConnections: 2,
+            _ => ValueTask.FromResult(new DisposableProbe(() => { })),
+            replacementHandshakeSpacing: TimeSpan.FromSeconds(1),
+            timeProvider: clock);
+
+        var originals = await Task.WhenAll(
+            pool.GetConnectionLockAsync(SemaphorePriority.High),
+            pool.GetConnectionLockAsync(SemaphorePriority.High));
+        foreach (var original in originals)
+        {
+            original.Replace("read-timeout-BODY");
+            original.Dispose();
+        }
+
+        using var firstCancellation = new CancellationTokenSource();
+        using var secondCancellation = new CancellationTokenSource();
+        var firstDelayStarted = clock.WaitForNextTimerAsync();
+        var secondDelayStarted = clock.WaitForNextTimerAsync();
+        var firstBorrow = pool.GetConnectionLockAsync(
+            SemaphorePriority.High, firstCancellation.Token);
+        var secondBorrow = pool.GetConnectionLockAsync(
+            SemaphorePriority.High, secondCancellation.Token);
+        await Task.WhenAll(firstDelayStarted, secondDelayStarted)
+            .WaitAsync(TimeSpan.FromSeconds(1));
+
+        firstCancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await firstBorrow);
+        secondCancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await secondBorrow);
+
+        var laterDelayStarted = clock.WaitForNextTimerAsync();
+        var laterBorrow = pool.GetConnectionLockAsync(SemaphorePriority.High);
+        await laterDelayStarted.WaitAsync(TimeSpan.FromSeconds(1));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        using (await laterBorrow.WaitAsync(TimeSpan.FromSeconds(1)))
+        {
+            Assert.Equal(1, pool.LiveConnections);
+        }
+
+        Assert.Equal(0, pool.GetChurn().HandshakeFailures);
+    }
+
     private sealed class SignalingTimeProvider : TimeProvider
     {
         private readonly ControllableTimeProvider _inner = new();
