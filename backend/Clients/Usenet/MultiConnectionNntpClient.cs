@@ -322,18 +322,25 @@ public class MultiConnectionNntpClient(
         var operation = NntpOperation.Body;
         var streamingTimeout = ct.GetContext<StreamingTimeoutContext>();
         var retryCount = streamingTimeout?.MaxRetries ?? 1;
+        var probeLease = CircuitProbeLease.None;
+        var admitted = false;
         while (true)
         {
             ConnectionLock<INntpClient>? connectionLock = null;
             var deferredCallback = new DeferredArticleBodyCallback();
             CancellationTokenSource? attemptCts = null;
-            var probeLease = CircuitProbeLease.None;
             try
             {
                 connectionLock = await AcquireConnectionLockAsync(
                         GetDownloadPriority(ct), workload, operation, ct)
                     .ConfigureAwait(false);
-                circuitBreaker.TryAdmit(out probeLease);
+                if (!TryAdmitOrContinueOwnedProbe(connectionLock, ref probeLease, ref admitted))
+                {
+                    connectionLock = null;
+                    deferredCallback.Discard();
+                    LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                    throw new CircuitAdmissionRejectedException();
+                }
 
                 var batchCt = ct;
                 if (streamingTimeout != null)
@@ -440,6 +447,12 @@ public class MultiConnectionNntpClient(
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
             }
+            catch (CircuitAdmissionRejectedException)
+            {
+                // Lock already returned to the pool; this is not a connection or command
+                // failure. MultiProviderNntpClient failovers to the next provider.
+                throw;
+            }
             catch (Exception e) when (e.TryGetCausingException(out UsenetArticleNotFoundException? _) && e is not OutOfMemoryException)
             {
                 // Permanently missing / invalid segment ids are not connection failures.
@@ -528,6 +541,8 @@ public class MultiConnectionNntpClient(
         if (streamingTimeout != null)
             retryCount = streamingTimeout.MaxRetries;
 
+        var probeLease = CircuitProbeLease.None;
+        var admitted = false;
         while (true)
         {
             ConnectionLock<INntpClient>? connectionLock = null;
@@ -572,7 +587,11 @@ public class MultiConnectionNntpClient(
                 throw new InvalidOperationException("Connection acquisition returned no lock.");
             }
 
-            circuitBreaker.TryAdmit(out var probeLease);
+            if (!TryAdmitOrContinueOwnedProbe(connectionLock, ref probeLease, ref admitted))
+            {
+                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                throw new CircuitAdmissionRejectedException();
+            }
 
             T? result;
             var deferredCallback = new DeferredArticleBodyCallback();
@@ -857,7 +876,8 @@ public class MultiConnectionNntpClient(
         var connectionLock = await AcquireConnectionLockRecordingFailureAsync(
                 priority, workload, operation, cancellationToken)
             .ConfigureAwait(false);
-        circuitBreaker.TryAdmit(out var probeLease);
+        if (!TryAdmitAcquiredConnection(connectionLock, out var probeLease))
+            throw new CircuitAdmissionRejectedException();
         var completed = false;
         try
         {
@@ -892,7 +912,7 @@ public class MultiConnectionNntpClient(
                     throw;
                 }
 
-                circuitBreaker.RecordSuccess(probe: probeLease);
+                RecordPipelinedItemOutcome(current, probeLease);
                 yield return current;
             }
         }
@@ -1138,6 +1158,54 @@ public class MultiConnectionNntpClient(
         return response;
     }
 
+    /// <summary>
+    /// After a connection lock is held, refuse the command when the circuit is still
+    /// cooling down or another caller already owns the half-open probe. Returns the
+    /// lock to the pool without replacing the socket.
+    /// </summary>
+    private bool TryAdmitAcquiredConnection(
+        ConnectionLock<INntpClient> connectionLock,
+        out CircuitProbeLease probeLease)
+    {
+        if (circuitBreaker.TryAdmit(out probeLease))
+            return true;
+
+        connectionLock.Dispose();
+        return false;
+    }
+
+    /// <summary>
+    /// Same as <see cref="TryAdmitAcquiredConnection"/> on the first attempt. On a
+    /// local retry, keep the already-admitted half-open probe instead of treating
+    /// the exclusive slot as a rejection.
+    /// </summary>
+    private bool TryAdmitOrContinueOwnedProbe(
+        ConnectionLock<INntpClient> connectionLock,
+        ref CircuitProbeLease probeLease,
+        ref bool admitted)
+    {
+        if (circuitBreaker.TryAdmit(out var newProbe))
+        {
+            probeLease = newProbe;
+            admitted = true;
+            return true;
+        }
+
+        if (admitted && circuitBreaker.GetSnapshot().State == ProviderCircuitState.HalfOpen)
+            return true;
+
+        connectionLock.Dispose();
+        return false;
+    }
+
+    private void RecordPipelinedItemOutcome<T>(T current, CircuitProbeLease probeLease)
+    {
+        if (current is PipelinedBodyResult { Found: false } or PipelinedArticleResult { Found: false })
+            circuitBreaker.RecordArticleNotFound(probeLease);
+        else
+            circuitBreaker.RecordSuccess(probe: probeLease);
+    }
+
     private static void LogException(Action? action)
     {
         try
@@ -1149,6 +1217,15 @@ public class MultiConnectionNntpClient(
             Log.Warning(e, "Unhandled exception");
         }
     }
+
+    /// <summary>
+    /// Retryable so <see cref="MultiProviderNntpClient"/> failovers. Distinct from a
+    /// command/connect failure so local retry loops do not replace a healthy socket
+    /// or count this as provider-health damage.
+    /// </summary>
+    private sealed class CircuitAdmissionRejectedException()
+        : RetryableDownloadException(
+            "NNTP provider circuit is open or another half-open probe is already in flight.");
 
     public override void Dispose()
     {

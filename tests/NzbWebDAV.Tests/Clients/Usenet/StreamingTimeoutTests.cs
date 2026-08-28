@@ -410,8 +410,9 @@ public class StreamingTimeoutTests
         breaker.RecordFailure();
         Assert.True(breaker.IsLatched);
 
-        await client.StatAsync("seg", CancellationToken.None);
-
+        var rejected = await Assert.ThrowsAnyAsync<RetryableDownloadException>(
+            () => client.StatAsync("seg", CancellationToken.None));
+        Assert.Contains("circuit", rejected.Message, StringComparison.OrdinalIgnoreCase);
         Assert.True(breaker.IsLatched);
         Assert.True(breaker.TrippedUntilMs > Environment.TickCount64);
 

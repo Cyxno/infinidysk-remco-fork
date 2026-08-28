@@ -328,7 +328,7 @@ public class ProviderCircuitBreakerConnectionFailureTests
         var breaker = new ProviderCircuitBreaker("stat-probe");
         breaker.RecordConnectionFailure();
         breaker.ExpireCooldownForTests();
-        Assert.False(breaker.IsTripped);
+        Assert.Equal(ProviderCircuitState.HalfOpen, breaker.GetSnapshot().State);
 
         using var pool = new ConnectionPool<INntpClient>(
             maxConnections: 1,

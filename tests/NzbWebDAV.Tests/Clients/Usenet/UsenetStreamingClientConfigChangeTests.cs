@@ -36,7 +36,8 @@ public class UsenetStreamingClientConfigChangeTests
             },
         ]);
 
-        using var client = CreateStreamingClient(config);
+        using var metricsWriter = new MetricsWriter();
+        using var client = CreateStreamingClient(config, metricsWriter);
         var original = Assert.Single(client.GetProviderClientsForTests());
         var originalSnapshot = Assert.Single(client.GetProviderConnectionSnapshots());
         Assert.Equal(TimeSpan.FromSeconds(30), original.NntpReadTimeout);
@@ -82,12 +83,14 @@ public class UsenetStreamingClientConfigChangeTests
         Assert.Equal(0, rebuiltSnapshot.IdleConnections);
     }
 
-    private static UsenetStreamingClient CreateStreamingClient(ConfigManager config) =>
+    private static UsenetStreamingClient CreateStreamingClient(
+        ConfigManager config,
+        MetricsWriter metricsWriter) =>
         new(
             config,
             new WebsocketManager(),
             new ProviderUsageTracker(),
-            new MetricsWriter(),
+            metricsWriter,
             new ProviderBytesTracker(),
             new StreamTraceBuffer(100),
             new ActiveReadRegistry());

@@ -240,12 +240,14 @@ public class ConnectionPoolReplacementTests
         first.Replace("read-timeout-BODY");
         first.Dispose();
 
-        var secondFailTimer = clock.WaitForNextTimerAsync();
+        var secondFailTimer = clock.WaitForNextTimerSource();
         var secondFail = pool.GetConnectionLockAsync(SemaphorePriority.High);
-        var secondFailStarted = await Task.WhenAny(secondFailTimer, secondFail)
+        var secondFailStarted = await Task.WhenAny(secondFailTimer.Task, secondFail)
             .WaitAsync(TimeSpan.FromSeconds(1));
-        if (ReferenceEquals(secondFailStarted, secondFailTimer))
+        if (ReferenceEquals(secondFailStarted, secondFailTimer.Task))
             clock.Advance(TimeSpan.FromMilliseconds(ConnectionPool<DisposableProbe>.MinimumHandshakeFailureBackoffMs));
+        else
+            secondFailTimer.TrySetCanceled();
         await Assert.ThrowsAsync<IOException>(async () =>
             await secondFail.WaitAsync(TimeSpan.FromSeconds(1)));
 
@@ -566,16 +568,21 @@ public class ConnectionPoolReplacementTests
             TimeSpan period)
         {
             var timer = _inner.CreateTimer(callback, state, dueTime, period);
-            if (_timerWaiters.TryDequeue(out var waiter))
-                waiter.TrySetResult();
+            while (_timerWaiters.TryDequeue(out var waiter))
+            {
+                if (waiter.TrySetResult())
+                    break;
+            }
             return timer;
         }
 
-        public Task WaitForNextTimerAsync()
+        public Task WaitForNextTimerAsync() => WaitForNextTimerSource().Task;
+
+        public TaskCompletionSource WaitForNextTimerSource()
         {
             var waiter = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             _timerWaiters.Enqueue(waiter);
-            return waiter.Task;
+            return waiter;
         }
 
         public void Advance(TimeSpan delta) => _inner.Advance(delta);

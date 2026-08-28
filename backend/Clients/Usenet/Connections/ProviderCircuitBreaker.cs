@@ -102,32 +102,36 @@ public class ProviderCircuitBreaker
     /// <summary>
     /// Admits a caller onto the provider. When the cooldown has lapsed, exactly one
     /// caller receives a probe lease that can resolve half-open state.
+    /// Takes the same lock as <see cref="RecordFailure"/> so a new probe cannot be
+    /// claimed in the window after an in-flight probe is cleared and before the
+    /// circuit reopens.
     /// </summary>
     public bool TryAdmit(out CircuitProbeLease probe)
     {
         probe = CircuitProbeLease.None;
-        var trippedUntil = Volatile.Read(ref _trippedUntilMs);
-        if (trippedUntil == 0)
+        lock (_lock)
         {
-            AmbientProbe.Value = CircuitProbeLease.None;
-            return true;
-        }
+            if (_trippedUntilMs == 0)
+            {
+                AmbientProbe.Value = CircuitProbeLease.None;
+                return true;
+            }
 
-        if (Clock() < trippedUntil)
-            return false;
+            if (Clock() < _trippedUntilMs)
+                return false;
 
-        TryReclaimAbandonedProbe();
-        if (Interlocked.CompareExchange(ref _halfOpenProbeInFlight, 1, 0) == 0)
-        {
-            var generation = Interlocked.Increment(ref _probeGeneration);
-            Volatile.Write(ref _admittedProbeGeneration, generation);
-            Volatile.Write(ref _probeStartedMs, Clock());
+            TryReclaimAbandonedProbe();
+            if (_halfOpenProbeInFlight != 0)
+                return false;
+
+            _halfOpenProbeInFlight = 1;
+            var generation = ++_probeGeneration;
+            _admittedProbeGeneration = generation;
+            _probeStartedMs = Clock();
             probe = new CircuitProbeLease(generation);
             AmbientProbe.Value = probe;
             return true;
         }
-
-        return false;
     }
 
     /// <summary>
@@ -468,19 +472,17 @@ public class ProviderCircuitBreaker
         AmbientProbe.Value = CircuitProbeLease.None;
     }
 
+    /// <summary>Must run while holding <see cref="_lock"/>.</summary>
     private void TryReclaimAbandonedProbe()
     {
-        if (Volatile.Read(ref _halfOpenProbeInFlight) != 1) return;
-        var started = Volatile.Read(ref _probeStartedMs);
-        if (started == 0) return;
-        if (Clock() - started < (long)ProbeAbandonTimeout.TotalMilliseconds) return;
+        if (_halfOpenProbeInFlight != 1) return;
+        if (_probeStartedMs == 0) return;
+        if (Clock() - _probeStartedMs < (long)ProbeAbandonTimeout.TotalMilliseconds) return;
 
         // Abandoned probe (cancelled request, etc.): free the slot so another
-        // caller can retry. CompareExchange so we don't clear a just-resolved probe.
-        if (Interlocked.CompareExchange(ref _halfOpenProbeInFlight, 0, 1) == 1)
-        {
-            Volatile.Write(ref _probeStartedMs, 0);
-            Volatile.Write(ref _admittedProbeGeneration, 0);
-        }
+        // caller can retry. Serialized with TryAdmit/Record* via _lock.
+        _halfOpenProbeInFlight = 0;
+        _probeStartedMs = 0;
+        _admittedProbeGeneration = 0;
     }
 }
