@@ -77,6 +77,55 @@ public class ConnectionPoolReplacementTests
     }
 
     [Fact]
+    public async Task ReplacementReservations_ExtendPacingWindowForLargeQueue()
+    {
+        const int poolWidth = 15;
+        var clock = new SignalingTimeProvider();
+        using var pool = new ConnectionPool<DisposableProbe>(
+            maxConnections: poolWidth,
+            _ => ValueTask.FromResult(new DisposableProbe(() => { })),
+            replacementHandshakeSpacing: TimeSpan.FromSeconds(1),
+            timeProvider: clock);
+
+        var originals = await Task.WhenAll(Enumerable.Range(0, poolWidth)
+            .Select(_ => pool.GetConnectionLockAsync(SemaphorePriority.High)));
+        foreach (var original in originals)
+        {
+            original.Replace("read-timeout-BODY");
+            original.Dispose();
+        }
+
+        var initialTimers = Enumerable.Range(0, 3)
+            .Select(_ => clock.WaitForNextTimerAsync())
+            .ToArray();
+        var replacements = Enumerable.Range(0, poolWidth)
+            .Select(_ => pool.GetConnectionLockAsync(SemaphorePriority.High))
+            .ToArray();
+        await Task.WhenAll(initialTimers).WaitAsync(TimeSpan.FromSeconds(1));
+
+        // Each completed delay admits one queued borrower through the three-slot
+        // handshake gate. The tenth admission crosses the original fixed window.
+        for (var i = 0; i < poolWidth - 3; i++)
+        {
+            var nextTimer = clock.WaitForNextTimerAsync();
+            clock.Advance(TimeSpan.FromSeconds(1));
+            await nextTimer.WaitAsync(TimeSpan.FromSeconds(1));
+        }
+
+        var allReplacements = Task.WhenAll(replacements);
+        for (var i = 0; i < 4 && !allReplacements.IsCompleted; i++)
+        {
+            clock.Advance(TimeSpan.FromSeconds(1));
+            await Task.Yield();
+        }
+        var acquired = await allReplacements.WaitAsync(TimeSpan.FromSeconds(1));
+        foreach (var replacement in acquired) replacement.Dispose();
+
+        Assert.Equal(poolWidth, pool.LiveConnections);
+        Assert.Equal(poolWidth, pool.IdleConnections);
+    }
+
+    [Fact]
     public async Task RepeatedHandshakeFailures_BackOffAndReleasePoolPermit()
     {
         var attempts = new ConcurrentQueue<long>();
@@ -195,9 +244,7 @@ public class ConnectionPoolReplacementTests
         Assert.Equal(1, pool.AvailableConnections);
 
         var laterBorrow = pool.GetConnectionLockAsync(SemaphorePriority.High);
-        Assert.True(laterBorrow.IsCompleted,
-            "A cancelled replacement left its pacing reservation behind.");
-        using (await laterBorrow)
+        using (await laterBorrow.WaitAsync(TimeSpan.FromSeconds(1)))
         {
             Assert.Equal(1, pool.LiveConnections);
         }
@@ -206,7 +253,7 @@ public class ConnectionPoolReplacementTests
     [Fact]
     public async Task CancelledReplacementPacingWait_DoesNotDelayNextBorrower()
     {
-        var clock = new ControllableTimeProvider();
+        var clock = new SignalingTimeProvider();
         using var pool = new ConnectionPool<DisposableProbe>(
             maxConnections: 1,
             _ => ValueTask.FromResult(new DisposableProbe(() => { })),
@@ -218,12 +265,16 @@ public class ConnectionPoolReplacementTests
         first.Dispose();
 
         using var cancellation = new CancellationTokenSource();
+        var cancelledDelayStarted = clock.WaitForNextTimerAsync();
         var cancelledBorrow = pool.GetConnectionLockAsync(
             SemaphorePriority.High, cancellation.Token);
+        await cancelledDelayStarted.WaitAsync(TimeSpan.FromSeconds(1));
         cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await cancelledBorrow);
 
+        var laterDelayStarted = clock.WaitForNextTimerAsync();
         var laterBorrow = pool.GetConnectionLockAsync(SemaphorePriority.High);
+        await laterDelayStarted.WaitAsync(TimeSpan.FromSeconds(1));
         clock.Advance(TimeSpan.FromSeconds(1));
         using (await laterBorrow.WaitAsync(TimeSpan.FromSeconds(1)))
         {
@@ -231,6 +282,37 @@ public class ConnectionPoolReplacementTests
         }
 
         Assert.Equal(0, pool.GetChurn().HandshakeFailures);
+    }
+
+    private sealed class SignalingTimeProvider : TimeProvider
+    {
+        private readonly ControllableTimeProvider _inner = new();
+        private readonly ConcurrentQueue<TaskCompletionSource> _timerWaiters = new();
+
+        public override DateTimeOffset GetUtcNow() => _inner.GetUtcNow();
+        public override long GetTimestamp() => _inner.GetTimestamp();
+        public override long TimestampFrequency => _inner.TimestampFrequency;
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            var timer = _inner.CreateTimer(callback, state, dueTime, period);
+            if (_timerWaiters.TryDequeue(out var waiter))
+                waiter.TrySetResult();
+            return timer;
+        }
+
+        public Task WaitForNextTimerAsync()
+        {
+            var waiter = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _timerWaiters.Enqueue(waiter);
+            return waiter.Task;
+        }
+
+        public void Advance(TimeSpan delta) => _inner.Advance(delta);
     }
 
     private static void UpdateMaximum(ref int maximum, int candidate)

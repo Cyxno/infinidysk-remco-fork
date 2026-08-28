@@ -264,6 +264,10 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             Interlocked.Exchange(ref _consecutiveHandshakeFailures, 0);
 
             var disposeConnection = false;
+            var connectionCreated = false;
+            var createdLive = 0;
+            var createdIdle = 0;
+            var createdMax = 0;
             lock (_lifecycleLock)
             {
                 if (_disposed == 1)
@@ -274,11 +278,19 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                 {
                     Interlocked.Increment(ref _connectionsOpened);
                     Interlocked.Increment(ref _live);
-                    Log.Debug(
-                        "NNTP connection created for {Provider}; connection={ConnectionId} live={Live} idle={Idle} active={Active} max={Max}",
-                        _diagnosticName, ConnectionId(conn), _live, _idleConnections.Count,
-                        _live - _idleConnections.Count, EffectiveMaxConnections);
+                    connectionCreated = true;
+                    createdLive = _live;
+                    createdIdle = _idleConnections.Count;
+                    createdMax = EffectiveMaxConnections;
                 }
+            }
+
+            if (connectionCreated)
+            {
+                Log.Debug(
+                    "NNTP connection created for {Provider}; connection={ConnectionId} live={Live} idle={Idle} active={Active} max={Max}",
+                    _diagnosticName, ConnectionId(conn), createdLive, createdIdle,
+                    createdLive - createdIdle, createdMax);
             }
 
             if (disposeConnection)
@@ -352,6 +364,9 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     {
         var disposeConnection = false;
         var notify = false;
+        var returnedLive = 0;
+        var returnedIdle = 0;
+        var returnedMax = 0;
         lock (_lifecycleLock)
         {
             if (_disposed == 1)
@@ -364,11 +379,18 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                 _idleConnections.Push(new Pooled(connection, Environment.TickCount64));
                 _gate.Release();
                 notify = true;
-                Log.Debug(
-                    "NNTP connection returned to pool for {Provider}; connection={ConnectionId} live={Live} idle={Idle} active={Active} max={Max}",
-                    _diagnosticName, ConnectionId(connection), _live, _idleConnections.Count,
-                    _live - _idleConnections.Count, EffectiveMaxConnections);
+                returnedLive = _live;
+                returnedIdle = _idleConnections.Count;
+                returnedMax = EffectiveMaxConnections;
             }
+        }
+
+        if (notify)
+        {
+            Log.Debug(
+                "NNTP connection returned to pool for {Provider}; connection={ConnectionId} live={Live} idle={Idle} active={Active} max={Max}",
+                _diagnosticName, ConnectionId(connection), returnedLive, returnedIdle,
+                returnedLive - returnedIdle, returnedMax);
         }
 
         if (disposeConnection)
@@ -397,13 +419,17 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         if (notify)
             TriggerConnectionPoolChangedEvent();
 
-        Log.Information(
+        Log.Debug(
             "NNTP connection disposed for {Provider}; connection={ConnectionId} reason={Reason} live={Live} idle={Idle} active={Active} max={Max}",
             _diagnosticName, ConnectionId(connection), reason ?? "replacement requested",
             _live, _idleConnections.Count, _live - _idleConnections.Count, EffectiveMaxConnections);
     }
 
-    private readonly record struct ReplacementPacingReservation(long PreviousDeadlineMs, long ReservedDeadlineMs);
+    private readonly record struct ReplacementPacingReservation(
+        long PreviousDeadlineMs,
+        long ReservedDeadlineMs,
+        long PreviousPacingUntilMs,
+        long ReservedPacingUntilMs);
 
     private async Task<ReplacementPacingReservation?> PaceReplacementHandshakeAsync(
         CancellationToken cancellationToken)
@@ -428,8 +454,17 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             target = Math.Max(now, target);
             delayMs = Math.Max(0, target - now);
             var reservedDeadline = unchecked(target + _replacementHandshakeSpacingMs);
+            var previousPacingUntil = _replacementPacingUntilMs;
+            var reservedPacingUntil = Math.Max(
+                previousPacingUntil,
+                unchecked(reservedDeadline + _replacementHandshakeSpacingMs));
             Volatile.Write(ref _nextReplacementHandshakeAtMs, reservedDeadline);
-            reservation = new ReplacementPacingReservation(previousDeadline, reservedDeadline);
+            _replacementPacingUntilMs = reservedPacingUntil;
+            reservation = new ReplacementPacingReservation(
+                previousDeadline,
+                reservedDeadline,
+                previousPacingUntil,
+                reservedPacingUntil);
         }
 
         try
@@ -461,7 +496,11 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             // Never overwrite a newer borrower's reservation. If this is still the
             // tail slot, removing it makes cancellation pacing-neutral.
             if (_nextReplacementHandshakeAtMs == value.ReservedDeadlineMs)
+            {
                 _nextReplacementHandshakeAtMs = value.PreviousDeadlineMs;
+                if (_replacementPacingUntilMs == value.ReservedPacingUntilMs)
+                    _replacementPacingUntilMs = value.PreviousPacingUntilMs;
+            }
         }
     }
 
