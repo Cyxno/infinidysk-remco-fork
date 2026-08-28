@@ -376,7 +376,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         {
             Interlocked.Decrement(ref _live);
             Interlocked.Increment(ref _connectionsDestroyed);
-            ArmReplacementPacing(_replacementHandshakeSpacingMs);
+            ArmReplacementPacingUnderLock(_replacementHandshakeSpacingMs);
             if (_disposed == 0)
             {
                 _gate.Release();
@@ -441,13 +441,23 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private void ArmReplacementPacing(long delayMs)
     {
         if (delayMs == 0) return;
+
+        lock (_lifecycleLock)
+            ArmReplacementPacingUnderLock(delayMs);
+    }
+
+    private void ArmReplacementPacingUnderLock(long delayMs)
+    {
         var now = Environment.TickCount64;
         var candidate = unchecked(now + delayMs);
         var pacingWindowMs = Math.Max(5000, Math.Max(delayMs, _replacementHandshakeSpacingMs * 10));
-        Volatile.Write(ref _replacementPacingUntilMs, unchecked(now + pacingWindowMs));
+        var pacingUntil = unchecked(now + pacingWindowMs);
+        if (pacingUntil > _replacementPacingUntilMs)
+            _replacementPacingUntilMs = pacingUntil;
+
         var current = Volatile.Read(ref _nextReplacementHandshakeAtMs);
         if (current == 0 || candidate > current)
-            Volatile.Write(ref _nextReplacementHandshakeAtMs, candidate);
+            _nextReplacementHandshakeAtMs = candidate;
     }
 
     private static int ConnectionId(T connection) => RuntimeHelpers.GetHashCode(connection!);

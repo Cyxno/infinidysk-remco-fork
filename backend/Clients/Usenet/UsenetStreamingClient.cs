@@ -46,17 +46,18 @@ public class UsenetStreamingClient : WrappingNntpClient
         configManager.OnConfigChanged += (_, configEventArgs) =>
         {
             var providersChanged = configEventArgs.ChangedConfig.ContainsKey(ConfigKeys.UsenetProviders);
+            var poolSettingsChanged = RequiresProviderPoolRebuild(configEventArgs.ChangedConfig);
             var streamingPriorityChanged =
                 configEventArgs.ChangedConfig.ContainsKey(ConfigKeys.UsenetStreamingPriority);
 
             // if unrelated config changed, do nothing
-            if (!providersChanged && !streamingPriorityChanged) return;
+            if (!providersChanged && !poolSettingsChanged && !streamingPriorityChanged) return;
 
             lock (_configChangeLock)
             {
                 try
                 {
-                    if (providersChanged)
+                    if (providersChanged || poolSettingsChanged)
                     {
                         // update the connection-pool according to the new config. New pools are
                         // built with the current odds, so a save that changes both needs no
@@ -77,11 +78,15 @@ public class UsenetStreamingClient : WrappingNntpClient
                 {
                     // Keep the previous (working) client and let remaining OnConfigChanged
                     // subscribers run — a throw from a multicast handler aborts the rest.
-                    Log.Error(e, "Failed to rebuild usenet client after provider config change; keeping previous client");
+                    Log.Error(e, "Failed to rebuild usenet client after provider or pool config change; keeping previous client");
                 }
             }
         };
     }
+
+    internal static bool RequiresProviderPoolRebuild(IReadOnlyDictionary<string, string> changedConfig) =>
+        changedConfig.ContainsKey(ConfigKeys.UsenetNntpReadTimeoutSeconds) ||
+        changedConfig.ContainsKey(ConfigKeys.UsenetReconnectDelayMilliseconds);
 
     /// <summary>
     /// Test constructor that wraps a scripted <see cref="INntpClient"/> without

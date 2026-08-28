@@ -115,6 +115,46 @@ public class ConnectionPoolReplacementTests
         Assert.Equal(3, pool.GetChurn().HandshakeFailures);
     }
 
+    [Fact]
+    public async Task ConcurrentHandshakeFailures_PreserveLongestBackoffDeadline()
+    {
+        var attempts = 0;
+        var releaseFailures = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var pool = new ConnectionPool<DisposableProbe>(
+            maxConnections: 3,
+            async _ =>
+            {
+                var attempt = Interlocked.Increment(ref attempts);
+                if (attempt <= 3)
+                {
+                    if (attempt == 3) releaseFailures.TrySetResult();
+                    await releaseFailures.Task;
+                    throw new IOException("AUTHINFO failed");
+                }
+
+                return new DisposableProbe(() => { });
+            },
+            replacementHandshakeSpacing: TimeSpan.FromMilliseconds(40));
+
+        var failures = Enumerable.Range(0, 3)
+            .Select(_ => Assert.ThrowsAsync<IOException>(async () =>
+                await pool.GetConnectionLockAsync(SemaphorePriority.High)))
+            .ToArray();
+        await Task.WhenAll(failures);
+
+        var retryStarted = Environment.TickCount64;
+        using (await pool.GetConnectionLockAsync(SemaphorePriority.High))
+        {
+            Assert.Equal(1, pool.LiveConnections);
+        }
+
+        var retryDelay = Environment.TickCount64 - retryStarted;
+        Assert.True(retryDelay >= 120,
+            $"Concurrent handshake failures preserved only {retryDelay}ms of the longest backoff.");
+        Assert.Equal(3, pool.GetChurn().HandshakeFailures);
+    }
+
     private static void UpdateMaximum(ref int maximum, int candidate)
     {
         var current = Volatile.Read(ref maximum);
