@@ -135,6 +135,21 @@ public class ProviderCircuitBreaker
     }
 
     /// <summary>
+    /// True when <paramref name="probe"/> is the currently admitted half-open lease.
+    /// Does not claim a slot. A <see cref="CircuitProbeLease.None"/> lease never owns
+    /// the probe, so a closed-circuit admission cannot continue into someone else's
+    /// half-open window.
+    /// </summary>
+    internal bool OwnsAdmittedProbe(CircuitProbeLease probe)
+    {
+        if (probe.IsNone)
+            return false;
+
+        lock (_lock)
+            return _halfOpenProbeInFlight == 1 && _admittedProbeGeneration == probe.Generation;
+    }
+
+    /// <summary>
     /// True once a trip has latched, whether still cooling down or waiting on a probe.
     /// Unlike <see cref="IsTripped"/> this claims no probe slot, so callers can read it
     /// without altering state.

@@ -52,6 +52,25 @@ public class CircuitAdmissionTests
     }
 
     [Fact]
+    public async Task DateAsync_RetryAfterClosedAdmission_DoesNotSendWhenAnotherCallerOwnsProbe()
+    {
+        var breaker = new ProviderCircuitBreaker("stale-none-lease");
+        var inner = new StealProbeOnFirstDateClient(breaker);
+        using var pool = new ConnectionPool<INntpClient>(
+            maxConnections: 2, _ => ValueTask.FromResult<INntpClient>(inner));
+        using var client = new MultiConnectionNntpClient(
+            pool, ProviderType.Pooled, breaker, "stale-none-lease");
+
+        var ex = await Assert.ThrowsAnyAsync<RetryableDownloadException>(
+            () => client.DateAsync(CancellationToken.None));
+
+        Assert.Contains("circuit", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, inner.DateCalls);
+        Assert.Equal(ProviderCircuitState.HalfOpen, breaker.GetSnapshot().State);
+        Assert.False(breaker.TryAdmit(out _));
+    }
+
+    [Fact]
     public async Task DecodedBodiesAsync_OpenCircuit_DoesNotSendCommand()
     {
         var inner = new CountingBodiesClient();
@@ -214,6 +233,28 @@ public class CircuitAdmissionTests
             Entered.TrySetResult();
             await Release.Task.WaitAsync(cancellationToken);
             return OkDate();
+        }
+    }
+
+    private sealed class StealProbeOnFirstDateClient(ProviderCircuitBreaker breaker) : StubNntpClient
+    {
+        public int DateCalls;
+
+        public override Task<UsenetDateResponse> DateAsync(CancellationToken cancellationToken)
+        {
+            var n = Interlocked.Increment(ref DateCalls);
+            if (n == 1)
+            {
+                breaker.RecordFailure();
+                breaker.RecordFailure();
+                breaker.RecordFailure();
+                breaker.ExpireCooldownForTests();
+                Assert.True(breaker.TryAdmit(out var stolen));
+                Assert.False(stolen.IsNone);
+                throw new IOException("first attempt failed after another caller claimed the probe");
+            }
+
+            return Task.FromResult(OkDate());
         }
     }
 

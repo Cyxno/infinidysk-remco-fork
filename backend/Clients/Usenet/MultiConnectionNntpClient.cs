@@ -1191,7 +1191,7 @@ public class MultiConnectionNntpClient(
             return true;
         }
 
-        if (admitted && circuitBreaker.GetSnapshot().State == ProviderCircuitState.HalfOpen)
+        if (admitted && circuitBreaker.OwnsAdmittedProbe(probeLease))
             return true;
 
         connectionLock.Dispose();
