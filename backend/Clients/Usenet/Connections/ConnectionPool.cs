@@ -245,6 +245,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             {
                 pacingReservation = await PaceReplacementHandshakeAsync(linked.Token).ConfigureAwait(false);
                 conn = await _factory(linked.Token).ConfigureAwait(false);
+                CommitReplacementPacing(pacingReservation);
             }
             catch (OperationCanceledException) when (linked.IsCancellationRequested)
             {
@@ -254,6 +255,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             }
             catch (Exception factoryError) when (factoryError is not OutOfMemoryException)
             {
+                CommitReplacementPacing(pacingReservation);
                 Interlocked.Increment(ref _handshakeFailures);
                 var consecutiveFailures = Interlocked.Increment(ref _consecutiveHandshakeFailures);
                 ArmReplacementPacing(GetHandshakeFailureBackoffMs(consecutiveFailures));
@@ -486,10 +488,15 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             throw;
         }
 
-        lock (_lifecycleLock)
-            _cancelledPacingReservations.Remove(reservation.PreviousDeadlineMs);
-
         return reservation;
+    }
+
+    private void CommitReplacementPacing(ReplacementPacingReservation? reservation)
+    {
+        if (reservation is not { } value) return;
+
+        lock (_lifecycleLock)
+            _cancelledPacingReservations.Remove(value.PreviousDeadlineMs);
     }
 
     private void RollBackReplacementPacing(ReplacementPacingReservation? reservation)

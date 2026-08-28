@@ -331,6 +331,64 @@ public class ConnectionPoolReplacementTests
         Assert.Equal(0, pool.GetChurn().HandshakeFailures);
     }
 
+    [Fact]
+    public async Task PacingCancellationThenFactoryCancellation_CollapsesBothReservations()
+    {
+        var clock = new SignalingTimeProvider();
+        var factoryCalls = 0;
+        var blockedFactoryStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var pool = new ConnectionPool<DisposableProbe>(
+            maxConnections: 2,
+            async cancellationToken =>
+            {
+                if (Interlocked.Increment(ref factoryCalls) == 3)
+                {
+                    blockedFactoryStarted.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+
+                return new DisposableProbe(() => { });
+            },
+            replacementHandshakeSpacing: TimeSpan.FromSeconds(1),
+            timeProvider: clock);
+
+        var originals = await Task.WhenAll(
+            pool.GetConnectionLockAsync(SemaphorePriority.High),
+            pool.GetConnectionLockAsync(SemaphorePriority.High));
+        foreach (var original in originals)
+        {
+            original.Replace("read-timeout-ARTICLE");
+            original.Dispose();
+        }
+
+        using var pacingCancellation = new CancellationTokenSource();
+        using var factoryCancellation = new CancellationTokenSource();
+        var firstDelayStarted = clock.WaitForNextTimerAsync();
+        var secondDelayStarted = clock.WaitForNextTimerAsync();
+        var pacingBorrow = pool.GetConnectionLockAsync(
+            SemaphorePriority.High, pacingCancellation.Token);
+        var factoryBorrow = pool.GetConnectionLockAsync(
+            SemaphorePriority.High, factoryCancellation.Token);
+        await Task.WhenAll(firstDelayStarted, secondDelayStarted)
+            .WaitAsync(TimeSpan.FromSeconds(1));
+
+        pacingCancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await pacingBorrow);
+        clock.Advance(TimeSpan.FromSeconds(2));
+        await blockedFactoryStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        factoryCancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await factoryBorrow);
+
+        var laterBorrow = pool.GetConnectionLockAsync(SemaphorePriority.High);
+        using (await laterBorrow.WaitAsync(TimeSpan.FromSeconds(1)))
+        {
+            Assert.Equal(1, pool.LiveConnections);
+        }
+
+        Assert.Equal(0, pool.GetChurn().HandshakeFailures);
+    }
+
     private sealed class SignalingTimeProvider : TimeProvider
     {
         private readonly ControllableTimeProvider _inner = new();
