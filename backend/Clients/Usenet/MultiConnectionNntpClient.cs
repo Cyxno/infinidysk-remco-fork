@@ -9,6 +9,7 @@ using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models;
+using NzbWebDAV.Services;
 using NzbWebDAV.Services.Metrics;
 using NzbWebDAV.Services.StreamTrace;
 using Serilog;
@@ -56,6 +57,8 @@ public class MultiConnectionNntpClient(
                 transferLimit,
                 priorityOdds)
             : null;
+    internal Action<ConnectionLock<INntpClient>, Action>? AttachDisposeCallbackForTests
+    { get; set; }
 
     public ProviderType ProviderType { get; } = type;
     public int Priority { get; } = priority;
@@ -890,7 +893,13 @@ public class MultiConnectionNntpClient(
 
     private static SemaphorePriority GetDownloadPriority(CancellationToken ct)
     {
-        return ct.GetContext<DownloadPriorityContext>()?.Priority ?? SemaphorePriority.Low;
+        if (ct.GetContext<DownloadPriorityContext>() is { } downloadPriority)
+            return downloadPriority.Priority;
+
+        return ct.GetContext<HealthCheckAdmissionContext>()?.Priority
+            == HealthCheckAdmissionPriority.Queue
+                ? SemaphorePriority.High
+                : SemaphorePriority.Low;
     }
 
     /// <summary>
@@ -911,9 +920,18 @@ public class MultiConnectionNntpClient(
         var returnConnectionLock = false;
         try
         {
-            if (_connectionAdmission is not null)
+            if (ct.GetContext<HealthCheckAdmissionContext>() is { } healthCheckContext)
             {
                 operationLeases = new OperationLeaseGroup();
+                operationLeases.Add(
+                    await healthCheckContext.Gate
+                        .AcquireAsync(healthCheckContext.Priority, ct)
+                        .ConfigureAwait(false));
+            }
+
+            if (_connectionAdmission is not null)
+            {
+                operationLeases ??= new OperationLeaseGroup();
                 operationLeases.Add(
                     await _connectionAdmission.AcquireAsync(
                             ClassifyConnectionKind(operation), priority, ct)
@@ -924,7 +942,10 @@ public class MultiConnectionNntpClient(
                 .ConfigureAwait(false);
             if (operationLeases is not null)
             {
-                connectionLock.AttachDisposeCallback(operationLeases.Dispose);
+                if (AttachDisposeCallbackForTests is { } attachForTests)
+                    attachForTests(connectionLock, operationLeases.Dispose);
+                else
+                    connectionLock.AttachDisposeCallback(operationLeases.Dispose);
                 operationLeases = null;
             }
 
