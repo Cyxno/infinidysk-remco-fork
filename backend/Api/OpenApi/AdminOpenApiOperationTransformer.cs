@@ -29,6 +29,7 @@ internal sealed class AdminOpenApiOperationTransformer : IOpenApiOperationTransf
         operation.Responses ??= [];
         if (!operation.Responses.ContainsKey("200"))
             operation.Responses["200"] = new OpenApiResponse { Description = "Success." };
+        ApplyMissingPayloadContractOverrides(operation, route, verb);
         AddProblemResponse(operation, "400", "Bad request.");
         AddProblemResponse(operation, "401", "Unauthorized.");
         AddProblemResponse(operation, "403", "Forbidden.");
@@ -53,6 +54,87 @@ internal sealed class AdminOpenApiOperationTransformer : IOpenApiOperationTransf
                     Schema = new OpenApiSchemaReference("ProblemDetails"),
                 },
             },
+        };
+    }
+
+    private static void ApplyMissingPayloadContractOverrides(
+        OpenApiOperation operation,
+        string route,
+        string verb)
+    {
+        var isExecute = verb == "post" && route == "api/remove-missing-payloads";
+        var isDryRun = verb == "post" && route == "api/remove-missing-payloads/dry-run";
+        var isAudit = verb == "get" && route == "api/remove-missing-payloads/audit";
+        if (!isExecute && !isDryRun && !isAudit)
+            return;
+
+        if (isExecute)
+        {
+            operation.Parameters ??= [];
+            operation.Parameters.Add(new OpenApiParameter
+            {
+                Name = "X-InfiniDysk-Cleanup-Preview",
+                In = ParameterLocation.Header,
+                Required = true,
+                Description = "Approval token returned by the matching dry run within its 15-minute lifetime.",
+                Schema = new OpenApiSchema { Type = JsonSchemaType.String },
+            });
+        }
+
+        operation.Responses ??= [];
+        operation.Responses["200"] = new OpenApiResponse
+        {
+            Description = "Success.",
+            Content = new Dictionary<string, OpenApiMediaType>
+            {
+                ["application/json"] = new OpenApiMediaType
+                {
+                    Schema = MissingPayloadSuccessSchema(isDryRun, isAudit),
+                },
+            },
+        };
+    }
+
+    private static OpenApiSchema MissingPayloadSuccessSchema(bool includePreviewToken, bool isAudit)
+    {
+        var properties = new Dictionary<string, IOpenApiSchema>
+        {
+            ["status"] = new OpenApiSchema { Type = JsonSchemaType.Boolean },
+            ["error"] = new OpenApiSchema
+            {
+                Type = JsonSchemaType.String | JsonSchemaType.Null,
+            },
+        };
+        if (isAudit)
+        {
+            properties["report"] = new OpenApiSchema { Type = JsonSchemaType.String };
+            return new OpenApiSchema
+            {
+                Type = JsonSchemaType.Object,
+                Properties = properties,
+                Required = new HashSet<string> { "status", "report" },
+            };
+        }
+
+        properties["message"] = new OpenApiSchema
+        {
+            Type = JsonSchemaType.String | JsonSchemaType.Null,
+        };
+        var required = new HashSet<string> { "status", "message" };
+        if (includePreviewToken)
+        {
+            properties["previewToken"] = new OpenApiSchema
+            {
+                Type = JsonSchemaType.String | JsonSchemaType.Null,
+            };
+            required.Add("previewToken");
+        }
+
+        return new OpenApiSchema
+        {
+            Type = JsonSchemaType.Object,
+            Properties = properties,
+            Required = required,
         };
     }
 
