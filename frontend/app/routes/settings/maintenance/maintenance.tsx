@@ -3,6 +3,7 @@ import { InputGroup, Select, Toggle } from "~/components/ui/form";
 import { Icon } from "~/components/ui/icon";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { PruneCompletedHistory } from "./prune-completed-history/prune-completed-history";
+import { RemoveMissingPayloads } from "./remove-missing-payloads/remove-missing-payloads";
 import { RemoveUnlinkedFiles } from "./remove-unlinked-files/remove-unlinked-files";
 import { RenameWindowsInvalidDavPaths } from "./rename-windows-invalid-dav-paths/rename-windows-invalid-dav-paths";
 import { ConvertStrmToSymlinks } from "./strm-to-symlinks/strm-to-symlinks";
@@ -313,6 +314,9 @@ export function Maintenance({ savedConfig, config, setNewConfig }: MaintenancePr
           <span className="badge badge-ghost badge-sm shrink-0">9 tools</span>
         </div>
         <div className="space-y-3">
+          <MaintenanceTaskDetails title="Clean Missing Payloads">
+            <RemoveMissingPayloads savedConfig={savedConfig} />
+          </MaintenanceTaskDetails>
           <MaintenanceTaskDetails title="Remove Orphaned Files">
             <RemoveUnlinkedFiles savedConfig={savedConfig} />
           </MaintenanceTaskDetails>

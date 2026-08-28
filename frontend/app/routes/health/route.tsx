@@ -49,7 +49,12 @@ function parsePageSize(value: string | null): number {
 }
 
 function parseHistoryFilter(value: string | null): HealthHistoryFilter {
-  return value === "deleted" || value === "repaired" || value === "degraded" ? value : "all";
+  return value === "deleted" ||
+    value === "repaired" ||
+    value === "degraded" ||
+    value === "action-needed"
+    ? value
+    : "all";
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -62,7 +67,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   // instead of `repairStatus`.
   const repairStatus =
     historyFilter === "all"
-      ? "deleted,repaired"
+      ? "deleted,repaired,action-needed"
       : historyFilter === "degraded"
         ? undefined
         : historyFilter;
