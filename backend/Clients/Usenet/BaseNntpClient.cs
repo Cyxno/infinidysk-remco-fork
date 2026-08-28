@@ -27,6 +27,7 @@ public class BaseNntpClient : NntpClient
     internal const int StatPipelinedSweepChunkSize = 512;
 
     private readonly IUsenetClient _client;
+    internal TimeSpan ReadTimeout { get; }
 
     public BaseNntpClient() : this(skipTlsVerification: false)
     {
@@ -45,6 +46,7 @@ public class BaseNntpClient : NntpClient
             InFlightArticleBudget.Current?.AccountBufferedPipeBytes(delta),
     }))
     {
+        ReadTimeout = readTimeout ?? TimeSpan.FromSeconds(30);
     }
 
     /// <summary>Test seam for injecting a scripted underlying client.</summary>

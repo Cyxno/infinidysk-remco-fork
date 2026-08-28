@@ -253,19 +253,25 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             ReplacementPacingReservation? pacingReservation = null;
             try
             {
-                pacingReservation = await PaceReplacementHandshakeAsync(linked.Token).ConfigureAwait(false);
-                conn = await _factory(linked.Token).ConfigureAwait(false);
+                pacingReservation = await PaceReplacementHandshakeAsync(linked.Token)
+                    .ConfigureAwait(false);
+
+                // The replacement attempt is now admitted. Its start consumes this slot
+                // even if TCP/TLS/authentication is later canceled.
                 CommitReplacementPacing(pacingReservation);
+                pacingReservation = null;
+
+                conn = await _factory(linked.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (linked.IsCancellationRequested)
             {
-                RollBackReplacementPacing(pacingReservation);
+                // PaceReplacementHandshakeAsync rolls back internally if its delay is
+                // canceled. A started factory keeps its spacing reservation.
                 ReleaseGateIfActive();
                 throw;
             }
             catch (Exception factoryError) when (factoryError is not OutOfMemoryException)
             {
-                CommitReplacementPacing(pacingReservation);
                 Interlocked.Increment(ref _handshakeFailures);
                 var consecutiveFailures = Interlocked.Increment(ref _consecutiveHandshakeFailures);
                 ArmReplacementPacing(GetHandshakeFailureBackoffMs(consecutiveFailures));
@@ -301,8 +307,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             if (connectionCreated)
             {
                 Log.Debug(
-                    "NNTP connection created for {Provider}; connection={ConnectionId} live={Live} idle={Idle} active={Active} max={Max}",
-                    _diagnosticName, ConnectionId(conn), createdLive, createdIdle,
+                    "NNTP connection created for {Provider}; connectionHash={ConnectionHash} live={Live} idle={Idle} active={Active} max={Max}",
+                    _diagnosticName, ConnectionHash(conn), createdLive, createdIdle,
                     createdLive - createdIdle, createdMax);
             }
 
@@ -467,8 +473,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         if (notify)
         {
             Log.Debug(
-                "NNTP connection returned to pool for {Provider}; connection={ConnectionId} live={Live} idle={Idle} active={Active} max={Max}",
-                _diagnosticName, ConnectionId(connection), returnedLive, returnedIdle,
+                "NNTP connection returned to pool for {Provider}; connectionHash={ConnectionHash} live={Live} idle={Idle} active={Active} max={Max}",
+                _diagnosticName, ConnectionHash(connection), returnedLive, returnedIdle,
                 returnedLive - returnedIdle, returnedMax);
         }
 
@@ -487,7 +493,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         {
             Interlocked.Decrement(ref _live);
             Interlocked.Increment(ref _connectionsDestroyed);
-            ArmReplacementPacingUnderLock(_replacementHandshakeSpacingMs);
+            if (_replacementHandshakeSpacingMs > 0)
+                ArmReplacementPacingUnderLock(_replacementHandshakeSpacingMs);
             if (_disposed == 0)
             {
                 _gate.Release();
@@ -499,8 +506,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             TriggerConnectionPoolChangedEvent();
 
         Log.Debug(
-            "NNTP connection disposed for {Provider}; connection={ConnectionId} reason={Reason} live={Live} idle={Idle} active={Active} max={Max}",
-            _diagnosticName, ConnectionId(connection), reason ?? "replacement requested",
+            "NNTP connection disposed for {Provider}; connectionHash={ConnectionHash} reason={Reason} live={Live} idle={Idle} active={Active} max={Max}",
+            _diagnosticName, ConnectionHash(connection), reason ?? "replacement requested",
             _live, _idleConnections.Count, _live - _idleConnections.Count, EffectiveMaxConnections);
     }
 
@@ -513,10 +520,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private async Task<ReplacementPacingReservation?> PaceReplacementHandshakeAsync(
         CancellationToken cancellationToken)
     {
-        if (_replacementHandshakeSpacingMs == 0) return null;
-
         long delayMs;
-        ReplacementPacingReservation reservation;
+        ReplacementPacingReservation? reservation = null;
         lock (_lifecycleLock)
         {
             var now = GetTimestampMilliseconds();
@@ -533,18 +538,24 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             var previousDeadline = target;
             target = Math.Max(now, target);
             delayMs = Math.Max(0, target - now);
-            var reservedDeadline = unchecked(target + _replacementHandshakeSpacingMs);
-            var previousPacingUntil = _replacementPacingUntilMs;
-            var reservedPacingUntil = Math.Max(
-                previousPacingUntil,
-                unchecked(reservedDeadline + _replacementHandshakeSpacingMs));
-            Volatile.Write(ref _nextReplacementHandshakeAtMs, reservedDeadline);
-            _replacementPacingUntilMs = reservedPacingUntil;
-            reservation = new ReplacementPacingReservation(
-                previousDeadline,
-                reservedDeadline,
-                previousPacingUntil,
-                reservedPacingUntil);
+
+            // Zero ordinary spacing still waits for an armed failure-backoff
+            // deadline, but it does not extend the reservation chain.
+            if (_replacementHandshakeSpacingMs > 0)
+            {
+                var reservedDeadline = unchecked(target + _replacementHandshakeSpacingMs);
+                var previousPacingUntil = _replacementPacingUntilMs;
+                var reservedPacingUntil = Math.Max(
+                    previousPacingUntil,
+                    unchecked(reservedDeadline + _replacementHandshakeSpacingMs));
+                Volatile.Write(ref _nextReplacementHandshakeAtMs, reservedDeadline);
+                _replacementPacingUntilMs = reservedPacingUntil;
+                reservation = new ReplacementPacingReservation(
+                    previousDeadline,
+                    reservedDeadline,
+                    previousPacingUntil,
+                    reservedPacingUntil);
+            }
         }
 
         try
@@ -592,16 +603,16 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         }
     }
 
+    internal const long MinimumHandshakeFailureBackoffMs = 500;
+
     private long GetHandshakeFailureBackoffMs(int consecutiveFailures)
     {
-        if (_replacementHandshakeSpacingMs == 0) return 0;
-
-        // Login/connect failures are where account-wide limits can spiral: all local
-        // sockets may be gone while the provider still counts their server-side sessions.
-        // Back off exponentially so already-queued borrowers cannot hammer AUTHINFO.
+        // Zero ordinary replacement spacing may skip the delay after a poisoned-socket
+        // replacement, but factory failures always keep a nonzero backoff floor so
+        // queued callers cannot hammer TCP/TLS/AUTHINFO.
+        var baseDelay = Math.Max(_replacementHandshakeSpacingMs, MinimumHandshakeFailureBackoffMs);
         var exponent = Math.Min(Math.Max(0, consecutiveFailures - 1), 6);
-        var multiplier = 1L << exponent;
-        return Math.Min(_replacementHandshakeSpacingMs * multiplier, 60_000);
+        return Math.Min(baseDelay * (1L << exponent), 60_000);
     }
 
     private void ArmReplacementPacing(long delayMs)
@@ -629,7 +640,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private long GetTimestampMilliseconds() =>
         (long)(_timeProvider.GetTimestamp() * 1000d / _timeProvider.TimestampFrequency);
 
-    private static int ConnectionId(T connection) => RuntimeHelpers.GetHashCode(connection!);
+    // Runtime object hash for log correlation only; not a monotonic socket generation.
+    private static int ConnectionHash(T connection) => RuntimeHelpers.GetHashCode(connection!);
 
     private void TriggerConnectionPoolChangedEvent()
     {

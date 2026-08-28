@@ -46,18 +46,17 @@ public class UsenetStreamingClient : WrappingNntpClient
         configManager.OnConfigChanged += (_, configEventArgs) =>
         {
             var providersChanged = configEventArgs.ChangedConfig.ContainsKey(ConfigKeys.UsenetProviders);
-            var poolSettingsChanged = RequiresProviderPoolRebuild(configEventArgs.ChangedConfig);
             var streamingPriorityChanged =
                 configEventArgs.ChangedConfig.ContainsKey(ConfigKeys.UsenetStreamingPriority);
 
             // if unrelated config changed, do nothing
-            if (!providersChanged && !poolSettingsChanged && !streamingPriorityChanged) return;
+            if (!providersChanged && !streamingPriorityChanged) return;
 
             lock (_configChangeLock)
             {
                 try
                 {
-                    if (providersChanged || poolSettingsChanged)
+                    if (providersChanged)
                     {
                         // update the connection-pool according to the new config. New pools are
                         // built with the current odds, so a save that changes both needs no
@@ -78,15 +77,11 @@ public class UsenetStreamingClient : WrappingNntpClient
                 {
                     // Keep the previous (working) client and let remaining OnConfigChanged
                     // subscribers run — a throw from a multicast handler aborts the rest.
-                    Log.Error(e, "Failed to rebuild usenet client after provider or pool config change; keeping previous client");
+                    Log.Error(e, "Failed to rebuild usenet client after provider config change; keeping previous client");
                 }
             }
         };
     }
-
-    internal static bool RequiresProviderPoolRebuild(IReadOnlyDictionary<string, string> changedConfig) =>
-        changedConfig.ContainsKey(ConfigKeys.UsenetNntpReadTimeoutSeconds) ||
-        changedConfig.ContainsKey(ConfigKeys.UsenetReconnectDelayMilliseconds);
 
     /// <summary>
     /// Test constructor that wraps a scripted <see cref="INntpClient"/> without
@@ -154,6 +149,11 @@ public class UsenetStreamingClient : WrappingNntpClient
         // even when the optional on-disk segment body cache is disabled.
         return new HeaderCachingNntpClient(inner);
     }
+
+    internal IReadOnlyList<MultiConnectionNntpClient> GetProviderClientsForTests() =>
+        WrappingNntpClient.Unwrap(InnerClient) is MultiProviderNntpClient multi
+            ? multi.Providers
+            : [];
 
     internal void UpdateProviderPriorityOdds(SemaphorePriorityOdds odds)
     {
@@ -368,7 +368,9 @@ public class UsenetStreamingClient : WrappingNntpClient
             metricsKey,
             latencyTracker,
             connectionDetails.MaxTransferConnections,
-            streamingPriority
+            streamingPriority,
+            nntpReadTimeout,
+            reconnectDelay
         );
         return providerClient;
     }
@@ -441,12 +443,6 @@ public class UsenetStreamingClient : WrappingNntpClient
 
     internal static bool ShouldWarnCleartextCredentials(bool useSsl, string? user) =>
         !useSsl && !string.IsNullOrEmpty(user);
-
-    public static ValueTask<INntpClient> CreateNewConnection
-    (
-        UsenetProviderConfig.ConnectionDetails connectionDetails,
-        CancellationToken ct
-    ) => CreateNewConnection(connectionDetails, TimeSpan.FromSeconds(30), ct);
 
     public static ValueTask<INntpClient> CreateNewConnection
     (

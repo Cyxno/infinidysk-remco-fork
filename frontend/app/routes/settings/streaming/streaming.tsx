@@ -557,7 +557,9 @@ export function StreamingSettings({
               id="nntp-read-timeout-help"
             >
               Maximum stalled wait for any NNTP response, including BODY, ARTICLE, and STAT (5–120s,
-              default 30). Takes effect after the next connection-pool rebuild or restart.
+              default 30). This is an inactivity timeout, not a total transfer deadline. Connect/auth
+              still uses a 15-second ceiling, and streaming budgets can expire first. Takes effect
+              after the next connection-pool rebuild or restart.
             </p>
           </div>
         </ManagedSetting>
@@ -594,7 +596,9 @@ export function StreamingSettings({
               id="reconnect-delay-help"
             >
               Spaces replacement handshakes after a poisoned socket is closed (0–5000ms, default
-              500) so providers can release the old server-side session.
+              500) so providers can release the old server-side session. Zero disables ordinary
+              spacing; failed TCP/TLS/AUTHINFO still back off from 500ms. Takes effect after the
+              next connection-pool rebuild or restart.
             </p>
           </div>
         </ManagedSetting>

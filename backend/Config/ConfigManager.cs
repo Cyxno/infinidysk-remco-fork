@@ -1040,8 +1040,12 @@ public class ConfigManager : IConfigReader, IConfigUpdater, IConfigChangeSource
     }
 
     /// <summary>
-    /// Per-command NNTP socket read timeout. Unlike the streaming budgets, this applies
-    /// consistently to ARTICLE, BODY, STAT and all other protocol responses.
+    /// Per-command NNTP stalled-read timeout. This is an inactivity deadline for a
+    /// single protocol read, not a total transfer deadline. Caller-specific budgets
+    /// (streaming segment/read timeouts and the 15-second connect/auth ceiling) can
+    /// expire first. Unlike the streaming budgets, this applies consistently to
+    /// ARTICLE, BODY, STAT and all other protocol responses. Takes effect on the next
+    /// connection-pool rebuild (provider config save or restart).
     /// </summary>
     public TimeSpan GetNntpReadTimeout()
     {
@@ -1052,7 +1056,10 @@ public class ConfigManager : IConfigReader, IConfigUpdater, IConfigChangeSource
 
     /// <summary>
     /// Minimum spacing between replacement handshakes after a poisoned socket is retired.
-    /// This gives providers time to release the old server-side session.
+    /// This gives providers time to release the old server-side session. Zero disables
+    /// ordinary replacement spacing, but TCP/TLS/AUTHINFO factory failures still back
+    /// off from a 500ms floor. Takes effect on the next connection-pool rebuild
+    /// (provider config save or restart).
     /// </summary>
     public TimeSpan GetReconnectDelay()
     {
