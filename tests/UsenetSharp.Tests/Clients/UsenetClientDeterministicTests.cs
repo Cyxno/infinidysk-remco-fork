@@ -1374,6 +1374,82 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task DecodedBodyAsync_MissingArticleKeepsConnectionReusable()
+    {
+        await using var server = new ScriptedNntpServer(async (command, writer, _) =>
+        {
+            if (command.StartsWith("BODY", StringComparison.Ordinal))
+                await writer.WriteLineAsync("430 no article with that message-id");
+            else if (command == "DATE")
+                await writer.WriteLineAsync("111 20260709213000");
+        });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        var callbackCount = 0;
+        var completion = new TaskCompletionSource<ArticleBodyResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var response = await client.DecodedBodyAsync(
+            "missing@example.com",
+            (result, _) =>
+            {
+                Interlocked.Increment(ref callbackCount);
+                completion.SetResult(result);
+            },
+            CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(response.ResponseType, Is.EqualTo(UsenetResponseType.NoArticleWithThatMessageId));
+            Assert.That(response.ResponseCode, Is.EqualTo(430));
+            Assert.That(response.Stream, Is.Null);
+            Assert.That(callbackCount, Is.EqualTo(1));
+        });
+        Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
+            Is.EqualTo(ArticleBodyResult.NotFound));
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.Multiple(() =>
+        {
+            Assert.That(date.ResponseType, Is.EqualTo(UsenetResponseType.DateAndTime));
+            Assert.That(client.IsHealthy, Is.True);
+            Assert.That(server.AcceptedConnections, Is.EqualTo(1));
+        });
+    }
+
+    [Test]
+    public async Task DecodedBodyAsync_UnexpectedConnectionResponse_ReportsNotRetrieved()
+    {
+        await using var server = new ScriptedNntpServer(async (command, writer, _) =>
+        {
+            if (command.StartsWith("BODY", StringComparison.Ordinal))
+                await writer.WriteLineAsync("502 connection limit (40) reached");
+        });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        var callbackCount = 0;
+        var completion = new TaskCompletionSource<ArticleBodyResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var response = await client.DecodedBodyAsync(
+            "denied@example.com",
+            (result, _) =>
+            {
+                Interlocked.Increment(ref callbackCount);
+                completion.SetResult(result);
+            },
+            CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(response.ResponseCode, Is.EqualTo(502));
+            Assert.That(response.Stream, Is.Null);
+            Assert.That(callbackCount, Is.EqualTo(1));
+        });
+        Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
+            Is.EqualTo(ArticleBodyResult.NotRetrieved));
+    }
+
+    [Test]
     public async Task DecodedBodiesAsync_TruncatedBodyFailsRemainingBatch()
     {
         await using var server = ScriptedNntpServer.StartConnectionScript(

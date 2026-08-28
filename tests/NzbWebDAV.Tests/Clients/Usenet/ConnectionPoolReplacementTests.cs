@@ -43,18 +43,12 @@ public class ConnectionPoolReplacementTests
     [Fact]
     public async Task ConcurrentReplacements_PaceNewHandshakes()
     {
-        var connectionNumber = 0;
-        var replacementCreatedAt = new ConcurrentQueue<long>();
+        var clock = new SignalingTimeProvider();
         using var pool = new ConnectionPool<DisposableProbe>(
             maxConnections: 2,
-            _ =>
-            {
-                var number = Interlocked.Increment(ref connectionNumber);
-                if (number > 2)
-                    replacementCreatedAt.Enqueue(Environment.TickCount64);
-                return ValueTask.FromResult(new DisposableProbe(() => { }));
-            },
-            replacementHandshakeSpacing: TimeSpan.FromMilliseconds(100));
+            _ => ValueTask.FromResult(new DisposableProbe(() => { })),
+            replacementHandshakeSpacing: TimeSpan.FromSeconds(1),
+            timeProvider: clock);
 
         var first = await pool.GetConnectionLockAsync(SemaphorePriority.High);
         var second = await pool.GetConnectionLockAsync(SemaphorePriority.High);
@@ -63,15 +57,24 @@ public class ConnectionPoolReplacementTests
         first.Dispose();
         second.Dispose();
 
-        var replacements = await Task.WhenAll(
+        var firstTimer = clock.WaitForNextTimerAsync();
+        var secondTimer = clock.WaitForNextTimerAsync();
+        var replacements = new[]
+        {
             pool.GetConnectionLockAsync(SemaphorePriority.High),
-            pool.GetConnectionLockAsync(SemaphorePriority.High));
-        foreach (var replacement in replacements) replacement.Dispose();
+            pool.GetConnectionLockAsync(SemaphorePriority.High),
+        };
+        await Task.WhenAll(firstTimer, secondTimer).WaitAsync(TimeSpan.FromSeconds(1));
 
-        var timestamps = replacementCreatedAt.ToArray();
-        Assert.Equal(2, timestamps.Length);
-        Assert.True(timestamps[1] - timestamps[0] >= 70,
-            $"Replacement handshakes were only {timestamps[1] - timestamps[0]}ms apart.");
+        clock.Advance(TimeSpan.FromSeconds(1));
+        var firstCompleted = await Task.WhenAny(replacements).WaitAsync(TimeSpan.FromSeconds(1));
+        await firstCompleted.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(1, replacements.Count(task => task.IsCompleted));
+
+        clock.Advance(TimeSpan.FromSeconds(1));
+        var acquired = await Task.WhenAll(replacements).WaitAsync(TimeSpan.FromSeconds(1));
+        foreach (var replacement in acquired) replacement.Dispose();
+
         Assert.Equal(2, pool.LiveConnections);
         Assert.Equal(2, pool.IdleConnections);
     }
@@ -128,46 +131,138 @@ public class ConnectionPoolReplacementTests
     [Fact]
     public async Task RepeatedHandshakeFailures_BackOffAndReleasePoolPermit()
     {
-        var attempts = new ConcurrentQueue<long>();
+        var clock = new SignalingTimeProvider();
         var attempt = 0;
         using var pool = new ConnectionPool<DisposableProbe>(
             maxConnections: 1,
             _ =>
             {
-                attempts.Enqueue(Environment.TickCount64);
                 if (Interlocked.Increment(ref attempt) <= 3)
                     throw new IOException("AUTHINFO failed");
                 return ValueTask.FromResult(new DisposableProbe(() => { }));
             },
-            replacementHandshakeSpacing: TimeSpan.FromMilliseconds(40));
+            replacementHandshakeSpacing: TimeSpan.FromSeconds(1),
+            timeProvider: clock);
 
-        for (var i = 0; i < 3; i++)
+        await Assert.ThrowsAsync<IOException>(async () =>
+            await pool.GetConnectionLockAsync(SemaphorePriority.High));
+        Assert.Equal(1, pool.AvailableConnections);
+
+        for (var i = 0; i < 2; i++)
         {
-            await Assert.ThrowsAsync<IOException>(async () =>
+            var retryTimer = clock.WaitForNextTimerAsync();
+            var retry = Assert.ThrowsAsync<IOException>(async () =>
                 await pool.GetConnectionLockAsync(SemaphorePriority.High));
+            await retryTimer.WaitAsync(TimeSpan.FromSeconds(1));
+            clock.Advance(TimeSpan.FromSeconds(1 << i));
+            await retry;
             Assert.Equal(1, pool.AvailableConnections);
             Assert.Equal(0, pool.LiveConnections);
         }
 
-        using (await pool.GetConnectionLockAsync(SemaphorePriority.High))
+        var successTimer = clock.WaitForNextTimerAsync();
+        var success = pool.GetConnectionLockAsync(SemaphorePriority.High);
+        await successTimer.WaitAsync(TimeSpan.FromSeconds(1));
+        clock.Advance(TimeSpan.FromSeconds(4));
+        using (await success.WaitAsync(TimeSpan.FromSeconds(1)))
         {
             Assert.Equal(1, pool.LiveConnections);
         }
 
-        var timestamps = attempts.ToArray();
-        Assert.Equal(4, timestamps.Length);
-        Assert.True(timestamps[1] - timestamps[0] >= 25,
-            $"First handshake retry waited only {timestamps[1] - timestamps[0]}ms.");
-        Assert.True(timestamps[2] - timestamps[1] >= 60,
-            $"Second handshake retry waited only {timestamps[2] - timestamps[1]}ms.");
-        Assert.True(timestamps[3] - timestamps[2] >= 120,
-            $"Third handshake retry waited only {timestamps[3] - timestamps[2]}ms.");
         Assert.Equal(3, pool.GetChurn().HandshakeFailures);
+    }
+
+    [Fact]
+    public async Task ZeroReplacementSpacing_StillBacksOffFactoryFailures()
+    {
+        var clock = new SignalingTimeProvider();
+        var attempt = 0;
+        using var pool = new ConnectionPool<DisposableProbe>(
+            maxConnections: 1,
+            _ =>
+            {
+                if (Interlocked.Increment(ref attempt) <= 2)
+                    throw new IOException("AUTHINFO failed");
+                return ValueTask.FromResult(new DisposableProbe(() => { }));
+            },
+            replacementHandshakeSpacing: TimeSpan.Zero,
+            timeProvider: clock);
+
+        await Assert.ThrowsAsync<IOException>(async () =>
+            await pool.GetConnectionLockAsync(SemaphorePriority.High));
+
+        var retryTimer = clock.WaitForNextTimerAsync();
+        var retry = Assert.ThrowsAsync<IOException>(async () =>
+            await pool.GetConnectionLockAsync(SemaphorePriority.High));
+        await retryTimer.WaitAsync(TimeSpan.FromSeconds(1));
+        clock.Advance(TimeSpan.FromMilliseconds(ConnectionPool<DisposableProbe>.MinimumHandshakeFailureBackoffMs));
+        await retry;
+
+        var successTimer = clock.WaitForNextTimerAsync();
+        var success = pool.GetConnectionLockAsync(SemaphorePriority.High);
+        await successTimer.WaitAsync(TimeSpan.FromSeconds(1));
+        clock.Advance(TimeSpan.FromMilliseconds(
+            ConnectionPool<DisposableProbe>.MinimumHandshakeFailureBackoffMs * 2));
+        using (await success.WaitAsync(TimeSpan.FromSeconds(1)))
+        {
+            Assert.Equal(1, pool.LiveConnections);
+        }
+
+        Assert.Equal(2, pool.GetChurn().HandshakeFailures);
+    }
+
+    [Fact]
+    public async Task SuccessfulHandshake_ResetsFailureBackoff()
+    {
+        var clock = new SignalingTimeProvider();
+        var attempt = 0;
+        using var pool = new ConnectionPool<DisposableProbe>(
+            maxConnections: 1,
+            _ =>
+            {
+                var n = Interlocked.Increment(ref attempt);
+                if (n is 1 or 3)
+                    throw new IOException("AUTHINFO failed");
+                return ValueTask.FromResult(new DisposableProbe(() => { }));
+            },
+            replacementHandshakeSpacing: TimeSpan.Zero,
+            timeProvider: clock);
+
+        await Assert.ThrowsAsync<IOException>(async () =>
+            await pool.GetConnectionLockAsync(SemaphorePriority.High)
+                .WaitAsync(TimeSpan.FromSeconds(1)));
+
+        var firstSuccessTimer = clock.WaitForNextTimerAsync();
+        var firstSuccess = pool.GetConnectionLockAsync(SemaphorePriority.High);
+        await firstSuccessTimer.WaitAsync(TimeSpan.FromSeconds(1));
+        clock.Advance(TimeSpan.FromMilliseconds(ConnectionPool<DisposableProbe>.MinimumHandshakeFailureBackoffMs));
+        var first = await firstSuccess.WaitAsync(TimeSpan.FromSeconds(1));
+        first.Replace("read-timeout-BODY");
+        first.Dispose();
+
+        var secondFailTimer = clock.WaitForNextTimerAsync();
+        var secondFail = pool.GetConnectionLockAsync(SemaphorePriority.High);
+        var secondFailStarted = await Task.WhenAny(secondFailTimer, secondFail)
+            .WaitAsync(TimeSpan.FromSeconds(1));
+        if (ReferenceEquals(secondFailStarted, secondFailTimer))
+            clock.Advance(TimeSpan.FromMilliseconds(ConnectionPool<DisposableProbe>.MinimumHandshakeFailureBackoffMs));
+        await Assert.ThrowsAsync<IOException>(async () =>
+            await secondFail.WaitAsync(TimeSpan.FromSeconds(1)));
+
+        var secondSuccessTimer = clock.WaitForNextTimerAsync();
+        var secondSuccess = pool.GetConnectionLockAsync(SemaphorePriority.High);
+        await secondSuccessTimer.WaitAsync(TimeSpan.FromSeconds(1));
+        clock.Advance(TimeSpan.FromMilliseconds(ConnectionPool<DisposableProbe>.MinimumHandshakeFailureBackoffMs));
+        using (await secondSuccess.WaitAsync(TimeSpan.FromSeconds(1)))
+        {
+            Assert.Equal(1, pool.LiveConnections);
+        }
     }
 
     [Fact]
     public async Task ConcurrentHandshakeFailures_PreserveLongestBackoffDeadline()
     {
+        var clock = new SignalingTimeProvider();
         var attempts = 0;
         var releaseFailures = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -185,7 +280,8 @@ public class ConnectionPoolReplacementTests
 
                 return new DisposableProbe(() => { });
             },
-            replacementHandshakeSpacing: TimeSpan.FromMilliseconds(40));
+            replacementHandshakeSpacing: TimeSpan.FromSeconds(1),
+            timeProvider: clock);
 
         var failures = Enumerable.Range(0, 3)
             .Select(_ => Assert.ThrowsAsync<IOException>(async () =>
@@ -193,25 +289,28 @@ public class ConnectionPoolReplacementTests
             .ToArray();
         await Task.WhenAll(failures);
 
-        var retryStarted = Environment.TickCount64;
-        using (await pool.GetConnectionLockAsync(SemaphorePriority.High))
+        var retryTimer = clock.WaitForNextTimerAsync();
+        var retry = pool.GetConnectionLockAsync(SemaphorePriority.High);
+        await retryTimer.WaitAsync(TimeSpan.FromSeconds(1));
+        clock.Advance(TimeSpan.FromSeconds(3));
+        Assert.False(retry.IsCompleted);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        using (await retry.WaitAsync(TimeSpan.FromSeconds(1)))
         {
             Assert.Equal(1, pool.LiveConnections);
         }
 
-        var retryDelay = Environment.TickCount64 - retryStarted;
-        Assert.True(retryDelay >= 120,
-            $"Concurrent handshake failures preserved only {retryDelay}ms of the longest backoff.");
         Assert.Equal(3, pool.GetChurn().HandshakeFailures);
     }
 
     [Fact]
-    public async Task CancelledReplacementFactory_DoesNotCountFailureOrDelayNextBorrower()
+    public async Task CancelledReplacementFactory_RetainsSpacingWithoutCountingFailure()
     {
-        var clock = new ControllableTimeProvider();
+        var clock = new SignalingTimeProvider();
         var factoryCalls = 0;
         var cancelledFactoryStarted = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelledFactoryDisposed = 0;
         using var pool = new ConnectionPool<DisposableProbe>(
             maxConnections: 1,
             async cancellationToken =>
@@ -219,8 +318,17 @@ public class ConnectionPoolReplacementTests
                 var call = Interlocked.Increment(ref factoryCalls);
                 if (call == 2)
                 {
+                    var probe = new DisposableProbe(() => Interlocked.Increment(ref cancelledFactoryDisposed));
                     cancelledFactoryStarted.TrySetResult();
-                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    try
+                    {
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        probe.Dispose();
+                        throw;
+                    }
                 }
 
                 return new DisposableProbe(() => { });
@@ -238,12 +346,17 @@ public class ConnectionPoolReplacementTests
             SemaphorePriority.High, cancellation.Token);
         await cancelledFactoryStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
         cancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await cancelledBorrow);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await cancelledBorrow.WaitAsync(TimeSpan.FromSeconds(1)));
 
         Assert.Equal(0, pool.GetChurn().HandshakeFailures);
         Assert.Equal(1, pool.AvailableConnections);
+        Assert.Equal(1, cancelledFactoryDisposed);
 
+        var laterDelay = clock.WaitForNextTimerAsync();
         var laterBorrow = pool.GetConnectionLockAsync(SemaphorePriority.High);
+        await laterDelay.WaitAsync(TimeSpan.FromSeconds(1));
+        clock.Advance(TimeSpan.FromSeconds(1));
         using (await laterBorrow.WaitAsync(TimeSpan.FromSeconds(1)))
         {
             Assert.Equal(1, pool.LiveConnections);
@@ -270,7 +383,8 @@ public class ConnectionPoolReplacementTests
             SemaphorePriority.High, cancellation.Token);
         await cancelledDelayStarted.WaitAsync(TimeSpan.FromSeconds(1));
         cancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await cancelledBorrow);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await cancelledBorrow.WaitAsync(TimeSpan.FromSeconds(1)));
 
         var laterDelayStarted = clock.WaitForNextTimerAsync();
         var laterBorrow = pool.GetConnectionLockAsync(SemaphorePriority.High);
@@ -315,9 +429,11 @@ public class ConnectionPoolReplacementTests
             .WaitAsync(TimeSpan.FromSeconds(1));
 
         firstCancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await firstBorrow);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await firstBorrow.WaitAsync(TimeSpan.FromSeconds(1)));
         secondCancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await secondBorrow);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await secondBorrow.WaitAsync(TimeSpan.FromSeconds(1)));
 
         var laterDelayStarted = clock.WaitForNextTimerAsync();
         var laterBorrow = pool.GetConnectionLockAsync(SemaphorePriority.High);
@@ -332,7 +448,47 @@ public class ConnectionPoolReplacementTests
     }
 
     [Fact]
-    public async Task PacingCancellationThenFactoryCancellation_CollapsesBothReservations()
+    public async Task CancelledFactory_WithZeroSpacing_DoesNotArmFailureBackoff()
+    {
+        var clock = new SignalingTimeProvider();
+        var cancelledFactoryStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var factoryCalls = 0;
+        using var pool = new ConnectionPool<DisposableProbe>(
+            maxConnections: 1,
+            async cancellationToken =>
+            {
+                if (Interlocked.Increment(ref factoryCalls) == 1)
+                {
+                    cancelledFactoryStarted.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+
+                return new DisposableProbe(() => { });
+            },
+            replacementHandshakeSpacing: TimeSpan.Zero,
+            timeProvider: clock);
+
+        using var cancellation = new CancellationTokenSource();
+        var cancelledBorrow = pool.GetConnectionLockAsync(
+            SemaphorePriority.High, cancellation.Token);
+        await cancelledFactoryStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await cancelledBorrow.WaitAsync(TimeSpan.FromSeconds(1)));
+
+        Assert.Equal(0, pool.GetChurn().HandshakeFailures);
+        Assert.Equal(1, pool.AvailableConnections);
+
+        var laterBorrow = pool.GetConnectionLockAsync(SemaphorePriority.High);
+        using (await laterBorrow.WaitAsync(TimeSpan.FromSeconds(1)))
+        {
+            Assert.Equal(1, pool.LiveConnections);
+        }
+    }
+
+    [Fact]
+    public async Task PacingCancellationThenFactoryCancellation_FactoryStartKeepsSpacing()
     {
         var clock = new SignalingTimeProvider();
         var factoryCalls = 0;
@@ -374,13 +530,18 @@ public class ConnectionPoolReplacementTests
             .WaitAsync(TimeSpan.FromSeconds(1));
 
         pacingCancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await pacingBorrow);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await pacingBorrow.WaitAsync(TimeSpan.FromSeconds(1)));
         clock.Advance(TimeSpan.FromSeconds(2));
         await blockedFactoryStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
         factoryCancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await factoryBorrow);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await factoryBorrow.WaitAsync(TimeSpan.FromSeconds(1)));
 
+        var laterDelayStarted = clock.WaitForNextTimerAsync();
         var laterBorrow = pool.GetConnectionLockAsync(SemaphorePriority.High);
+        await laterDelayStarted.WaitAsync(TimeSpan.FromSeconds(1));
+        clock.Advance(TimeSpan.FromSeconds(1));
         using (await laterBorrow.WaitAsync(TimeSpan.FromSeconds(1)))
         {
             Assert.Equal(1, pool.LiveConnections);
