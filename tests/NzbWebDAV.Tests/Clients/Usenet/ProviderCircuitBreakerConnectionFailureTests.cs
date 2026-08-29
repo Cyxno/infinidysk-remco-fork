@@ -2,7 +2,6 @@ using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Clients.Usenet.Connections;
 using NzbWebDAV.Clients.Usenet.Models;
-using NzbWebDAV.Exceptions;
 using NzbWebDAV.Models;
 using UsenetSharp.Models;
 
@@ -42,9 +41,9 @@ public class ProviderCircuitBreakerConnectionFailureTests
             breaker,
             "unreachable");
 
-        // The first failed connect trips the breaker, so the local retry is rejected
-        // at admission without burning another connect attempt on the dead provider.
-        await Assert.ThrowsAnyAsync<RetryableDownloadException>(
+        // The first failed connect trips the breaker, so the retry is skipped and the
+        // original error surfaces without another connect attempt on the dead provider.
+        await Assert.ThrowsAsync<IOException>(
             () => client.StatAsync("segment", CancellationToken.None));
 
         var snapshot = breaker.GetSnapshot();
@@ -112,9 +111,7 @@ public class ProviderCircuitBreakerConnectionFailureTests
         Assert.Equal(ProviderCircuitState.Closed, breaker.GetSnapshot().State);
 
         clock += 2_000;
-        // The window trips on this call's first attempt, so the retry is rejected at
-        // admission and surfaces as a circuit rejection instead of the IOException.
-        await Assert.ThrowsAnyAsync<RetryableDownloadException>(
+        await Assert.ThrowsAsync<IOException>(
             () => client.StatAsync("third", CancellationToken.None));
 
         Assert.Equal(ProviderCircuitState.Open, breaker.GetSnapshot().State);
@@ -144,9 +141,7 @@ public class ProviderCircuitBreakerConnectionFailureTests
         using var client = new MultiConnectionNntpClient(
             pool, ProviderType.Pooled, breaker, "half-open-live");
 
-        // The half-open probe's failed connect re-trips the breaker; the retry is
-        // then rejected at admission without another connect attempt.
-        await Assert.ThrowsAnyAsync<RetryableDownloadException>(
+        await Assert.ThrowsAsync<IOException>(
             () => client.StatAsync("segment", CancellationToken.None));
 
         Assert.Equal(ProviderCircuitState.Open, breaker.GetSnapshot().State);
@@ -172,9 +167,9 @@ public class ProviderCircuitBreakerConnectionFailureTests
             breaker,
             "unreachable-batch");
 
-        // The first failed connect trips the breaker, so the local retry is rejected
-        // at admission without burning another connect attempt on the dead provider.
-        await Assert.ThrowsAnyAsync<RetryableDownloadException>(
+        // The first failed connect trips the breaker, so the retry is skipped and the
+        // original error surfaces without another connect attempt on the dead provider.
+        await Assert.ThrowsAsync<IOException>(
             () => client.DecodedBodiesAsync(
                 new List<SegmentId> { "segment" },
                 onConnectionReadyAgain: null,
@@ -244,7 +239,7 @@ public class ProviderCircuitBreakerConnectionFailureTests
 
         var firstResponse = await client.StatAsync("first", CancellationToken.None);
         Assert.True(firstResponse.ArticleExists);
-        // One failed connect trips the primary; the retry is rejected at admission.
+        // One failed connect trips the primary and surfaces without a wasteful retry.
         Assert.Equal(1, primaryAttempts);
         Assert.Equal(ProviderCircuitState.Open, primaryBreaker.GetSnapshot().State);
 

@@ -61,10 +61,11 @@ public class CircuitAdmissionTests
         using var client = new MultiConnectionNntpClient(
             pool, ProviderType.Pooled, breaker, "stale-none-lease");
 
-        var ex = await Assert.ThrowsAnyAsync<RetryableDownloadException>(
+        // The stolen probe latches the breaker, so the local retry is skipped (a retry
+        // would be rejected at admission anyway) and the original error surfaces.
+        await Assert.ThrowsAsync<IOException>(
             () => client.DateAsync(CancellationToken.None));
 
-        Assert.Contains("circuit", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, inner.DateCalls);
         Assert.Equal(ProviderCircuitState.HalfOpen, breaker.GetSnapshot().State);
         Assert.False(breaker.TryAdmit(out _));
@@ -138,6 +139,53 @@ public class CircuitAdmissionTests
         Assert.Equal(ProviderCircuitState.Closed, breaker.GetSnapshot().State);
         Assert.Equal(TimeSpan.FromSeconds(120), breaker.CurrentCooldown);
         Assert.Equal(1, breaker.GetSnapshot().ArticleMissCount);
+    }
+
+    [Fact]
+    public async Task DateAsync_CallerCancellationDuringHalfOpenProbe_ReleasesProbeSlot()
+    {
+        var inner = new GatedDateClient();
+        var breaker = HalfOpen();
+        using var pool = new ConnectionPool<INntpClient>(
+            maxConnections: 1, _ => ValueTask.FromResult<INntpClient>(inner));
+        using var client = new MultiConnectionNntpClient(
+            pool, ProviderType.Pooled, breaker, "cancel-probe");
+        using var cts = new CancellationTokenSource();
+
+        var first = client.DateAsync(cts.Token);
+        await inner.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await cts.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+
+        // The abandoned probe is released immediately instead of blocking admission
+        // until the abandon timeout expires.
+        Assert.True(breaker.TryAdmit(out var probe));
+        Assert.False(probe.IsNone);
+    }
+
+    [Fact]
+    public async Task DecodedBodiesPipelinedAsync_NonDefinitiveMiss_RetripsHalfOpenAsFailure()
+    {
+        var inner = new MissPipelinedBodyClient(definitivelyMissing: false);
+        var breaker = HalfOpen();
+        using var pool = new ConnectionPool<INntpClient>(
+            maxConnections: 1, _ => ValueTask.FromResult<INntpClient>(inner));
+        using var client = new MultiConnectionNntpClient(
+            pool, ProviderType.Pooled, breaker, "mismatch-pipe");
+
+        await foreach (var _ in client.DecodedBodiesPipelinedAsync(
+            ["seg@example.com"], 1, CancellationToken.None))
+        {
+        }
+
+        // A segment-id mismatch is a protocol failure, not a clean miss: it must
+        // re-trip the half-open circuit instead of closing it as article-not-found.
+        // HalfOpen() records 3 failures to trip; the mismatch adds the 4th.
+        var snapshot = breaker.GetSnapshot();
+        Assert.Equal(ProviderCircuitState.Open, snapshot.State);
+        Assert.Equal(2, snapshot.TripCount);
+        Assert.Equal(4, snapshot.FailureCount);
+        Assert.Equal(0, snapshot.ArticleMissCount);
     }
 
     private static ProviderCircuitBreaker TripOpen(string name = "admission")
@@ -272,7 +320,7 @@ public class CircuitAdmissionTests
         }
     }
 
-    private sealed class MissPipelinedBodyClient : StubNntpClient
+    private sealed class MissPipelinedBodyClient(bool definitivelyMissing = true) : StubNntpClient
     {
         public int Calls;
 
@@ -290,6 +338,7 @@ public class CircuitAdmissionTests
                 {
                     SegmentId = segmentId,
                     Found = false,
+                    DefinitivelyMissing = definitivelyMissing,
                 };
             }
         }

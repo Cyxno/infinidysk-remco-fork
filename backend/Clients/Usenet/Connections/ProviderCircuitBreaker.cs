@@ -150,6 +150,25 @@ public class ProviderCircuitBreaker
     }
 
     /// <summary>
+    /// Releases a half-open probe whose caller is abandoning it (caller cancellation,
+    /// pool retirement) without recording an outcome, so the next caller can probe
+    /// immediately instead of waiting out <see cref="ProbeAbandonTimeout"/>. Only the
+    /// owning generation can release; a stale or closed-circuit lease is ignored and
+    /// the latched trip is left untouched.
+    /// </summary>
+    internal void ReleaseProbe(CircuitProbeLease probe)
+    {
+        if (probe.IsNone)
+            return;
+
+        lock (_lock)
+        {
+            if (_halfOpenProbeInFlight == 1 && _admittedProbeGeneration == probe.Generation)
+                ClearAdmittedProbe();
+        }
+    }
+
+    /// <summary>
     /// True once a trip has latched, whether still cooling down or waiting on a probe.
     /// Unlike <see cref="IsTripped"/> this claims no probe slot, so callers can read it
     /// without altering state.
