@@ -745,10 +745,26 @@ public class MultiConnectionNntpClient(
             // body and article
             else if (!(result?.Success ?? false))
             {
-                circuitBreaker.RecordArticleNotFound(probeLease);
                 deferredCallback.Discard();
-                LogException(() => connectionLock?.Dispose());
-                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotFound));
+                if (result is not null && UsenetArticleAvailability.IsDefinitiveMissing(result))
+                {
+                    // 430/451: the article is gone from this provider — a clean miss,
+                    // not a provider failure. The connection is safe to reuse.
+                    circuitBreaker.RecordArticleNotFound(probeLease);
+                    LogException(() => connectionLock?.Dispose());
+                    LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotFound));
+                }
+                else
+                {
+                    // Any other non-success (e.g. 500) is a provider-side failure, not a
+                    // missing article: replace the socket (the wire state is unknown) and
+                    // report NotRetrieved. MultiProviderNntpClient records the unexpected
+                    // response and the next attempt re-selects a provider.
+                    RecordProviderFailure($"cmd-{name}-unexpected-response", probeLease);
+                    LogException(() => connectionLock?.Replace($"unexpected-response-{name}"));
+                    LogException(() => connectionLock?.Dispose());
+                    LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                }
             }
             else
             {

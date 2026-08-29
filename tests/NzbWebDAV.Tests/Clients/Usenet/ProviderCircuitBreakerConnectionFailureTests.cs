@@ -395,6 +395,53 @@ public class ProviderCircuitBreakerConnectionFailureTests
         Assert.Contains("ConnectionReset", snapshot.LastFailureReason);
     }
 
+    [Fact]
+    public async Task DecodedBodyAsync_DefinitiveMissingResponse_RecordsCleanMissAndReusesConnection()
+    {
+        var breaker = new ProviderCircuitBreaker("clean-miss");
+        using var pool = new ConnectionPool<INntpClient>(
+            maxConnections: 1,
+            _ => ValueTask.FromResult<INntpClient>(new RawResponseBodyClient(430)));
+        using var client = new MultiConnectionNntpClient(
+            pool, ProviderType.Pooled, breaker, "clean-miss");
+
+        var callbacks = new List<ArticleBodyResult>();
+        var response = await client.DecodedBodyAsync(
+            "segment",
+            (result, _) => callbacks.Add(result),
+            CancellationToken.None);
+
+        Assert.False(response.Success);
+        Assert.Equal([ArticleBodyResult.NotFound], callbacks);
+        Assert.Equal(1, breaker.GetSnapshot().ArticleMissCount);
+        Assert.Equal(0, breaker.GetSnapshot().FailureCount);
+        Assert.Equal(1, pool.IdleConnections);
+        Assert.Equal(0, pool.GetChurn().ConnectionsDestroyed);
+    }
+
+    [Fact]
+    public async Task DecodedBodyAsync_UnexpectedErrorResponse_ReportsNotRetrievedAndReplacesConnection()
+    {
+        var breaker = new ProviderCircuitBreaker("server-error");
+        using var pool = new ConnectionPool<INntpClient>(
+            maxConnections: 1,
+            _ => ValueTask.FromResult<INntpClient>(new RawResponseBodyClient(500)));
+        using var client = new MultiConnectionNntpClient(
+            pool, ProviderType.Pooled, breaker, "server-error");
+
+        var callbacks = new List<ArticleBodyResult>();
+        var response = await client.DecodedBodyAsync(
+            "segment",
+            (result, _) => callbacks.Add(result),
+            CancellationToken.None);
+
+        Assert.False(response.Success);
+        Assert.Equal([ArticleBodyResult.NotRetrieved], callbacks);
+        Assert.Equal(1, breaker.GetSnapshot().FailureCount);
+        Assert.Equal(0, breaker.GetSnapshot().ArticleMissCount);
+        Assert.Equal(1, pool.GetChurn().ConnectionsDestroyed);
+    }
+
     private sealed class ReasonReportingBodyClient : NntpClient
     {
         public const string Reason = "IOException (SocketException: ConnectionReset)";
@@ -454,6 +501,69 @@ public class ProviderCircuitBreakerConnectionFailureTests
                 Responses = responses,
             });
         }
+
+        public override Task<UsenetDecodedArticleResponse> DecodedArticleAsync(
+            SegmentId segmentId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public override Task<UsenetDecodedArticleResponse> DecodedArticleAsync(
+            SegmentId segmentId,
+            ArticleBodyCompletionHandler? onConnectionReadyAgain,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public override Task<UsenetDateResponse> DateAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public override void Dispose()
+        {
+        }
+    }
+
+    /// <summary>
+    /// Returns a raw non-success BODY response without throwing, bypassing the
+    /// BaseNntpClient throw-on-non-2xx mapping so the RunWithConnection response
+    /// classification fallback is exercised directly.
+    /// </summary>
+    private sealed class RawResponseBodyClient(int responseCode) : NntpClient
+    {
+        public override Task ConnectAsync(
+            string host, int port, bool useSsl, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public override Task<UsenetResponse> AuthenticateAsync(
+            string user, string pass, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public override Task<UsenetStatResponse> StatAsync(
+            SegmentId segmentId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public override Task<UsenetHeadResponse> HeadAsync(
+            SegmentId segmentId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public override Task<UsenetDecodedBodyResponse> DecodedBodyAsync(
+            SegmentId segmentId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public override Task<UsenetDecodedBodyResponse> DecodedBodyAsync(
+            SegmentId segmentId,
+            ArticleBodyCompletionHandler? onConnectionReadyAgain,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new UsenetDecodedBodyResponse
+            {
+                SegmentId = segmentId,
+                ResponseCode = responseCode,
+                ResponseMessage = $"{responseCode} simulated response",
+                Stream = null,
+            });
+
+        public override Task<UsenetDecodedBodyBatch> DecodedBodiesAsync(
+            IReadOnlyList<SegmentId> segmentIds,
+            ArticleBodyCompletionHandler? onConnectionReadyAgain,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
 
         public override Task<UsenetDecodedArticleResponse> DecodedArticleAsync(
             SegmentId segmentId, CancellationToken cancellationToken) =>
