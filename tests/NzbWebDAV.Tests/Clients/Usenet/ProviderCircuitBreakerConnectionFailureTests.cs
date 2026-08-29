@@ -2,6 +2,7 @@ using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Clients.Usenet.Connections;
 using NzbWebDAV.Clients.Usenet.Models;
+using NzbWebDAV.Exceptions;
 using NzbWebDAV.Models;
 using UsenetSharp.Models;
 
@@ -41,11 +42,13 @@ public class ProviderCircuitBreakerConnectionFailureTests
             breaker,
             "unreachable");
 
-        await Assert.ThrowsAsync<IOException>(
+        // The first failed connect trips the breaker, so the local retry is rejected
+        // at admission without burning another connect attempt on the dead provider.
+        await Assert.ThrowsAnyAsync<RetryableDownloadException>(
             () => client.StatAsync("segment", CancellationToken.None));
 
         var snapshot = breaker.GetSnapshot();
-        Assert.Equal(2, attempts);
+        Assert.Equal(1, attempts);
         Assert.Equal(ProviderCircuitState.Open, snapshot.State);
         Assert.Equal(1, snapshot.FailureCount);
         Assert.Equal(1, snapshot.TripCount);
@@ -109,7 +112,9 @@ public class ProviderCircuitBreakerConnectionFailureTests
         Assert.Equal(ProviderCircuitState.Closed, breaker.GetSnapshot().State);
 
         clock += 2_000;
-        await Assert.ThrowsAsync<IOException>(
+        // The window trips on this call's first attempt, so the retry is rejected at
+        // admission and surfaces as a circuit rejection instead of the IOException.
+        await Assert.ThrowsAnyAsync<RetryableDownloadException>(
             () => client.StatAsync("third", CancellationToken.None));
 
         Assert.Equal(ProviderCircuitState.Open, breaker.GetSnapshot().State);
@@ -139,7 +144,9 @@ public class ProviderCircuitBreakerConnectionFailureTests
         using var client = new MultiConnectionNntpClient(
             pool, ProviderType.Pooled, breaker, "half-open-live");
 
-        await Assert.ThrowsAsync<IOException>(
+        // The half-open probe's failed connect re-trips the breaker; the retry is
+        // then rejected at admission without another connect attempt.
+        await Assert.ThrowsAnyAsync<RetryableDownloadException>(
             () => client.StatAsync("segment", CancellationToken.None));
 
         Assert.Equal(ProviderCircuitState.Open, breaker.GetSnapshot().State);
@@ -165,14 +172,16 @@ public class ProviderCircuitBreakerConnectionFailureTests
             breaker,
             "unreachable-batch");
 
-        await Assert.ThrowsAsync<IOException>(
+        // The first failed connect trips the breaker, so the local retry is rejected
+        // at admission without burning another connect attempt on the dead provider.
+        await Assert.ThrowsAnyAsync<RetryableDownloadException>(
             () => client.DecodedBodiesAsync(
                 new List<SegmentId> { "segment" },
                 onConnectionReadyAgain: null,
                 CancellationToken.None));
 
         var snapshot = breaker.GetSnapshot();
-        Assert.Equal(2, attempts);
+        Assert.Equal(1, attempts);
         Assert.Equal(ProviderCircuitState.Open, snapshot.State);
         Assert.Equal(1, snapshot.FailureCount);
         Assert.Equal(1, snapshot.TripCount);
@@ -235,7 +244,8 @@ public class ProviderCircuitBreakerConnectionFailureTests
 
         var firstResponse = await client.StatAsync("first", CancellationToken.None);
         Assert.True(firstResponse.ArticleExists);
-        Assert.Equal(2, primaryAttempts);
+        // One failed connect trips the primary; the retry is rejected at admission.
+        Assert.Equal(1, primaryAttempts);
         Assert.Equal(ProviderCircuitState.Open, primaryBreaker.GetSnapshot().State);
 
         var responses = await Task.WhenAll(
@@ -243,7 +253,8 @@ public class ProviderCircuitBreakerConnectionFailureTests
                 .Select(i => client.StatAsync($"concurrent-{i}", CancellationToken.None)));
 
         Assert.All(responses, response => Assert.True(response.ArticleExists));
-        Assert.Equal(2, primaryAttempts);
+        // The open circuit rejects admission before the pool is touched.
+        Assert.Equal(1, primaryAttempts);
     }
 
     [Fact]

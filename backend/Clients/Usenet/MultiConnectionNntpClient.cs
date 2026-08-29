@@ -323,9 +323,17 @@ public class MultiConnectionNntpClient(
         var streamingTimeout = ct.GetContext<StreamingTimeoutContext>();
         var retryCount = streamingTimeout?.MaxRetries ?? 1;
         var probeLease = CircuitProbeLease.None;
-        var admitted = false;
         while (true)
         {
+            // Claim circuit admission before touching the pool so a rejected caller
+            // never triggers a connect+auth handshake on a cold pool. Rejection is
+            // retryable: MultiProviderNntpClient fails over to the next provider.
+            if (!TryAdmitBeforeAcquisition(ref probeLease))
+            {
+                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                throw new CircuitAdmissionRejectedException();
+            }
+
             ConnectionLock<INntpClient>? connectionLock = null;
             var deferredCallback = new DeferredArticleBodyCallback();
             CancellationTokenSource? attemptCts = null;
@@ -334,13 +342,6 @@ public class MultiConnectionNntpClient(
                 connectionLock = await AcquireConnectionLockAsync(
                         GetDownloadPriority(ct), workload, operation, ct)
                     .ConfigureAwait(false);
-                if (!TryAdmitOrContinueOwnedProbe(connectionLock, ref probeLease, ref admitted))
-                {
-                    connectionLock = null;
-                    deferredCallback.Discard();
-                    LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
-                    throw new CircuitAdmissionRejectedException();
-                }
 
                 var batchCt = ct;
                 if (streamingTimeout != null)
@@ -447,12 +448,6 @@ public class MultiConnectionNntpClient(
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
             }
-            catch (CircuitAdmissionRejectedException)
-            {
-                // Lock already returned to the pool; this is not a connection or command
-                // failure. MultiProviderNntpClient failovers to the next provider.
-                throw;
-            }
             catch (Exception e) when (e.TryGetCausingException(out UsenetArticleNotFoundException? _) && e is not OutOfMemoryException)
             {
                 // Permanently missing / invalid segment ids are not connection failures.
@@ -542,9 +537,17 @@ public class MultiConnectionNntpClient(
             retryCount = streamingTimeout.MaxRetries;
 
         var probeLease = CircuitProbeLease.None;
-        var admitted = false;
         while (true)
         {
+            // Claim circuit admission before touching the pool so a rejected caller
+            // never triggers a connect+auth handshake on a cold pool. Rejection is
+            // retryable: MultiProviderNntpClient fails over to the next provider.
+            if (!TryAdmitBeforeAcquisition(ref probeLease))
+            {
+                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                throw new CircuitAdmissionRejectedException();
+            }
+
             ConnectionLock<INntpClient>? connectionLock = null;
             try
             {
@@ -585,12 +588,6 @@ public class MultiConnectionNntpClient(
             {
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw new InvalidOperationException("Connection acquisition returned no lock.");
-            }
-
-            if (!TryAdmitOrContinueOwnedProbe(connectionLock, ref probeLease, ref admitted))
-            {
-                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
-                throw new CircuitAdmissionRejectedException();
             }
 
             T? result;
@@ -889,11 +886,14 @@ public class MultiConnectionNntpClient(
     {
         var workload = DownloadWorkloadClassifier.Classify(cancellationToken);
         var priority = GetDownloadPriority(cancellationToken);
+        // Claim circuit admission before touching the pool so a rejected caller never
+        // triggers a connect+auth handshake on a cold pool. Rejection is retryable:
+        // MultiProviderNntpClient fails over to the next provider.
+        if (!circuitBreaker.TryAdmit(out var probeLease))
+            throw new CircuitAdmissionRejectedException();
         var connectionLock = await AcquireConnectionLockRecordingFailureAsync(
                 priority, workload, operation, cancellationToken)
             .ConfigureAwait(false);
-        if (!TryAdmitAcquiredConnection(connectionLock, out var probeLease))
-            throw new CircuitAdmissionRejectedException();
         var completed = false;
         try
         {
@@ -1175,43 +1175,19 @@ public class MultiConnectionNntpClient(
     }
 
     /// <summary>
-    /// After a connection lock is held, refuse the command when the circuit is still
-    /// cooling down or another caller already owns the half-open probe. Returns the
-    /// lock to the pool without replacing the socket.
+    /// Claims circuit admission before any physical connection acquisition, so a
+    /// rejected caller never triggers a connect+auth handshake on a cold pool.
+    /// A closed-circuit admission (<see cref="CircuitProbeLease.None"/>) is not
+    /// exclusive, so it is re-verified on every attempt and a circuit that tripped
+    /// between attempts still rejects the retry. A half-open probe lease continues
+    /// only while it still owns the probe slot.
     /// </summary>
-    private bool TryAdmitAcquiredConnection(
-        ConnectionLock<INntpClient> connectionLock,
-        out CircuitProbeLease probeLease)
+    private bool TryAdmitBeforeAcquisition(ref CircuitProbeLease probeLease)
     {
-        if (circuitBreaker.TryAdmit(out probeLease))
-            return true;
+        if (probeLease.IsNone)
+            return circuitBreaker.TryAdmit(out probeLease);
 
-        connectionLock.Dispose();
-        return false;
-    }
-
-    /// <summary>
-    /// Same as <see cref="TryAdmitAcquiredConnection"/> on the first attempt. On a
-    /// local retry, keep the already-admitted half-open probe instead of treating
-    /// the exclusive slot as a rejection.
-    /// </summary>
-    private bool TryAdmitOrContinueOwnedProbe(
-        ConnectionLock<INntpClient> connectionLock,
-        ref CircuitProbeLease probeLease,
-        ref bool admitted)
-    {
-        if (circuitBreaker.TryAdmit(out var newProbe))
-        {
-            probeLease = newProbe;
-            admitted = true;
-            return true;
-        }
-
-        if (admitted && circuitBreaker.OwnsAdmittedProbe(probeLease))
-            return true;
-
-        connectionLock.Dispose();
-        return false;
+        return circuitBreaker.OwnsAdmittedProbe(probeLease);
     }
 
     private void RecordPipelinedItemOutcome<T>(T current, CircuitProbeLease probeLease)
